@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Secrets — never commit
+.env
+.env.local
+config/*.local.json
+
+# Database files
+*.db
+*.db-shm
+*.db-wal
+
+# Salesforce data exports (may contain PII)
+data/exports/
+data/*.csv
+data/
+
+# Claude Code local settings (personal, not shared)
+.claude/settings.local.json
+
+# macOS
+.DS_Store
+
+# Editor
+.vscode/
+*.swp

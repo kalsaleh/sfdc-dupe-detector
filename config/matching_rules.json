@@ -1,0 +1,38 @@
+{
+  "account_fields": [
+    "Type",
+    "Industry",
+    "Account_Stage__c",
+    "BillingCountry",
+    "ARR__c",
+    "Current_ARR__c",
+    "Customer_Health__c",
+    "CreatedDate",
+    "LastModifiedDate"
+  ],
+  "match_rules": [
+    {
+      "name": "sumble",
+      "label": "Sumble Org ID",
+      "fields": ["Sumble_Org_Id__c"],
+      "normalizer": "clean",
+      "base_score": 99,
+      "cross_signal_bonus": 10
+    },
+    {
+      "name": "linkedin",
+      "label": "LinkedIn Company",
+      "fields": [
+        "LID__LinkedIn_Company_Id__c",
+        "LinkedIn_Company_Page__c",
+        "Sumble_Linkedin_Url__c",
+        "Sumble_Linkedin_Company_Id__c"
+      ],
+      "normalizer": "linkedin_company",
+      "base_score": 90,
+      "cross_signal_bonus": 7
+    }
+  ],
+  "service_owner_prefixes": ["SVC"],
+  "admin_owner_names": []
+}
