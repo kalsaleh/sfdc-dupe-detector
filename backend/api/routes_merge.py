@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import json
 from fastapi import APIRouter
-from backend.models import MergeExecuteRequest, MergeExecuteResponse, BulkMergeRequest, BulkMergeResponse
+from backend.models import MergeExecuteRequest, MergeExecuteResponse, BulkMergeRequest, BulkMergeResponse, AdhocMergeRequest
 from backend.merging.diff_builder import build_diff
 from backend.merging.related_data import get_related_counts
-from backend.merging.merge_executor import execute_merge
+from backend.merging.merge_executor import execute_merge, execute_adhoc_merge
 from backend.extraction.simple_sf import get_sf_client
 from backend.db import get_conn
 
@@ -218,6 +218,16 @@ async def dismiss_group(group_id: int):
         return {"message": "Group dismissed"}
     finally:
         conn.close()
+
+
+@router.post("/merge/adhoc", response_model=MergeExecuteResponse)
+async def adhoc_merge(req: AdhocMergeRequest):
+    """Merge accounts directly by ID without requiring a duplicate group.
+
+    Useful for ad-hoc merges requested outside of the normal duplicate detection flow.
+    """
+    result = execute_adhoc_merge(req.master_id, req.victim_ids, req.reason)
+    return MergeExecuteResponse(**result)
 
 
 def _log_action(conn, group_id, master_id, victim_ids, action, status, response) -> int:

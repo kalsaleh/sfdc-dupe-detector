@@ -83,6 +83,12 @@ class MergeExecuteRequest(BaseModel):
     victim_ids: Optional[List[str]] = None
 
 
+class AdhocMergeRequest(BaseModel):
+    master_id: str
+    victim_ids: List[str]
+    reason: Optional[str] = None
+
+
 class MergeExecuteResponse(BaseModel):
     success: bool
     message: str

@@ -312,3 +312,111 @@ def _log_merge(conn, group_id, master_id, victim_ids, status, response) -> int:
     )
     conn.commit()
     return cursor.lastrowid
+
+
+def execute_adhoc_merge(master_id: str, victim_ids: list, reason: str | None = None) -> dict:
+    """Merge accounts directly by ID without requiring a duplicate group.
+
+    This is for ad-hoc merges requested outside of the normal duplicate detection flow.
+
+    Returns {success, message, merge_log_id}
+    """
+    import logging
+    log = logging.getLogger(__name__)
+
+    conn = get_conn()
+    try:
+        sf = get_sf_client()
+
+        # Verify all accounts exist
+        all_ids = [master_id] + victim_ids
+        id_list = "','".join(all_ids)
+        live = sf.query(
+            f"SELECT Id, Name, ParentId FROM Account WHERE Id IN ('{id_list}') AND IsDeleted = false"
+        ).get("records", [])
+        live_ids = {r["Id"] for r in live}
+        live_names = {r["Id"]: r.get("Name", r["Id"]) for r in live}
+
+        missing = [aid for aid in all_ids if aid not in live_ids]
+        if missing:
+            return {"success": False, "message": f"Accounts not found: {missing}"}
+
+        if master_id not in live_ids:
+            return {"success": False, "message": f"Master account {master_id} not found"}
+
+        victim_ids = [v for v in victim_ids if v in live_ids]
+        if not victim_ids:
+            return {"success": False, "message": "No victim accounts to merge"}
+
+        # Break internal parent-child links to avoid CIRCULAR_DEPENDENCY
+        merge_set = set(all_ids)
+        for rec in live:
+            if rec.get("ParentId") and rec["ParentId"] in merge_set:
+                try:
+                    sf.Account.update(rec["Id"], {"ParentId": None})
+                except Exception:
+                    pass
+
+        soap_url = f"https://{sf.sf_instance}/services/Soap/u/{sf.sf_version}"
+        headers = {
+            "Content-Type": "text/xml; charset=UTF-8",
+            "SOAPAction": "merge",
+        }
+
+        # Batch victims in groups of 2 (SF merge limit)
+        batches = [victim_ids[i:i + 2] for i in range(0, len(victim_ids), 2)]
+        all_responses = []
+        acr_cleaned = 0
+
+        for batch_idx, batch in enumerate(batches):
+            remaining_victims = [v for b in batches[batch_idx:] for v in b]
+            acr_cleaned += _clean_overlapping_acrs(sf, master_id, remaining_victims)
+
+            body = SOAP_MERGE_TEMPLATE.format(
+                session_id=sf.session_id,
+                master_id=master_id,
+                victim_elements=_build_victim_xml(batch),
+            )
+
+            resp = http_requests.post(soap_url, data=body.encode("utf-8"), headers=headers)
+            parsed = _parse_merge_response(resp.text)
+            all_responses.append(parsed)
+
+            if not parsed["success"]:
+                error_msg = json.dumps(parsed.get("errors", parsed.get("error", "Unknown")))
+                _log_adhoc_merge(conn, master_id, victim_ids, "failed", error_msg, reason)
+                return {"success": False, "message": f"Merge failed: {error_msg}"}
+
+        # Success
+        merge_log_id = _log_adhoc_merge(
+            conn, master_id, victim_ids, "merged",
+            json.dumps(all_responses, default=str), reason
+        )
+
+        master_name = live_names.get(master_id, master_id)
+        victim_names = [live_names.get(v, v) for v in victim_ids]
+        log.info("Ad-hoc merge completed: %s <- %s (reason: %s)", master_name, victim_names, reason)
+
+        acr_note = f" ({acr_cleaned} overlapping ACRs cleaned)" if acr_cleaned else ""
+        return {
+            "success": True,
+            "message": f"Merged {len(victim_ids)} account(s) into {master_name}{acr_note}",
+            "merge_log_id": merge_log_id,
+        }
+
+    except Exception as e:
+        _log_adhoc_merge(conn, master_id, victim_ids, "error", str(e), reason)
+        return {"success": False, "message": str(e)}
+    finally:
+        conn.close()
+
+
+def _log_adhoc_merge(conn, master_id, victim_ids, status, response, reason=None) -> int:
+    """Log an ad-hoc merge (group_id is NULL)."""
+    cursor = conn.execute(
+        """INSERT INTO merge_log (group_id, master_id, victim_ids, status, sf_response, action)
+           VALUES (NULL, ?, ?, ?, ?, ?)""",
+        (master_id, json.dumps(victim_ids), status, response, reason or "adhoc_merge"),
+    )
+    conn.commit()
+    return cursor.lastrowid
