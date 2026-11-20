@@ -69,16 +69,22 @@ const Api = {
         return api(`/match/group-ids?${qs}`);
     },
 
-    // Merge
+    // Merge writes are hard-disabled. Dismiss stays on the local database.
     getMergePreview: (groupId) => api(`/merge/preview/${groupId}`),
-    executeMerge: (groupId, masterId, victimIds = null) =>
-        api(`/merge/execute/${groupId}`, { method: 'POST', body: { master_id: masterId, ...(victimIds ? { victim_ids: victimIds } : {}) } }),
-    setParent: (groupId, parentId, victimIds = null) =>
-        api(`/merge/set-parent/${groupId}`, { method: 'POST', body: { master_id: parentId, ...(victimIds ? { victim_ids: victimIds } : {}) } }),
+    executeMerge() {
+        throw new Error('Read-only mode: Salesforce merge is disabled.');
+    },
+    setParent() {
+        throw new Error('Read-only mode: Salesforce parent updates are disabled.');
+    },
     dismissGroup: (groupId) =>
         api(`/merge/dismiss/${groupId}`, { method: 'POST' }),
-    bulkMerge: (groupIds, action = 'merge') =>
-        api('/merge/bulk', { method: 'POST', body: { group_ids: groupIds, action } }),
+    bulkMerge(groupIds, action = 'merge') {
+        if (action !== 'dismiss') {
+            throw new Error('Read-only mode: Salesforce writes are disabled.');
+        }
+        return api('/merge/bulk', { method: 'POST', body: { group_ids: groupIds, action } });
+    },
 
     // Export
     exportGroups: async (groupIds = null, tier = null, status = null) => {

@@ -36,3 +36,9 @@ data/
 # Editor
 .vscode/
 *.swp
+
+# Static review build
+dist/
+
+# Account exports — never commit, wherever they land
+*.csv

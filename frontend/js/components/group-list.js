@@ -37,8 +37,6 @@ async function renderGroupList(container, initialFilters = {}) {
         <div id="export-bar" class="flex items-center gap-3 mb-3 hidden">
             <span id="selection-count" class="text-sm text-slate-600 font-medium"></span>
             <button id="btn-export-selected" class="px-3 py-1.5 bg-charcoal text-white rounded-lg text-sm hover:bg-slate-800 font-medium transition-colors">Export</button>
-            <button id="btn-merge-selected" class="px-3 py-1.5 bg-alarmalade-500 text-white rounded-lg text-sm hover:bg-alarmalade-600 font-medium transition-colors">Merge Selected</button>
-            <button id="btn-parent-selected" class="px-3 py-1.5 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700 font-medium transition-colors">Set Parent Selected</button>
             <button id="btn-dismiss-selected" class="px-3 py-1.5 bg-slate-200 text-slate-700 rounded-lg text-sm hover:bg-slate-300 font-medium transition-colors">Dismiss Selected</button>
             <button id="btn-clear-selection" class="px-3 py-1.5 text-slate-500 border border-sand-dark rounded-lg text-sm hover:bg-sand transition-colors">Clear</button>
         </div>
@@ -71,16 +69,6 @@ async function renderGroupList(container, initialFilters = {}) {
         document.querySelectorAll('.group-checkbox').forEach(cb => cb.checked = false);
         const selectAll = document.getElementById('select-all-checkbox');
         if (selectAll) selectAll.checked = false;
-    });
-
-    document.getElementById('btn-merge-selected').addEventListener('click', () => {
-        if (selectedGroupIds.size === 0) return;
-        showBulkConfirmModal('merge', Array.from(selectedGroupIds));
-    });
-
-    document.getElementById('btn-parent-selected').addEventListener('click', () => {
-        if (selectedGroupIds.size === 0) return;
-        showBulkConfirmModal('set_parent', Array.from(selectedGroupIds));
     });
 
     document.getElementById('btn-dismiss-selected').addEventListener('click', () => {
@@ -205,14 +193,6 @@ function renderGroupTable(container, data) {
             <td class="px-4 py-3.5">
                 <div class="flex items-center gap-2 row-actions" data-group-id="${g.group_id}">
                     ${g.status === 'pending' ? `
-                        <button class="quick-merge-btn px-2.5 py-1 text-xs font-medium rounded-lg transition-colors bg-green-50 text-green-700 hover:bg-green-100 border border-green-200"
-                            data-group-id="${g.group_id}" data-action="merge">
-                            Merge${g.recommended_action === 'merge' ? '*' : ''}
-                        </button>
-                        <button class="quick-merge-btn px-2.5 py-1 text-xs font-medium rounded-lg transition-colors bg-blue-50 text-blue-700 hover:bg-blue-100 border border-blue-200"
-                            data-group-id="${g.group_id}" data-action="set_parent">
-                            Parent${g.recommended_action === 'set_parent' ? '*' : ''}
-                        </button>
                         <button class="quick-dismiss-btn px-2.5 py-1 text-xs font-medium rounded-lg bg-sand text-slate-600 hover:bg-sand-dark border border-sand-dark transition-colors"
                             data-group-id="${g.group_id}">
                             Dismiss
@@ -271,32 +251,7 @@ function renderGroupTable(container, data) {
         updateSelectionUI();
     });
 
-    // Quick merge/parent buttons
-    container.querySelectorAll('.quick-merge-btn').forEach(btn => {
-        btn.addEventListener('click', async (e) => {
-            e.stopPropagation();
-            const groupId = parseInt(btn.dataset.groupId);
-            const action = btn.dataset.action;
-            _setRowProcessing(groupId, action === 'set_parent' ? 'Setting parent...' : 'Merging...');
-            try {
-                const diff = await Api.getMergePreview(groupId);
-                const masterId = diff.recommended_master;
-                let result;
-                if (action === 'set_parent') result = await Api.setParent(groupId, masterId);
-                else result = await Api.executeMerge(groupId, masterId);
-                if (result.success) {
-                    _setRowDone(groupId, action === 'set_parent' ? 'Parent set' : 'Merged');
-                    setTimeout(() => loadGroupTable(), 600);
-                } else {
-                    _setRowError(groupId, result.message);
-                }
-            } catch (err) {
-                _setRowError(groupId, err.message);
-            }
-        });
-    });
-
-    // Quick dismiss buttons
+    // Quick dismiss buttons. Merge and set-parent are not offered.
     container.querySelectorAll('.quick-dismiss-btn').forEach(btn => {
         btn.addEventListener('click', async (e) => {
             e.stopPropagation();
@@ -379,6 +334,7 @@ function navigateToDetail(groupId) {
 }
 
 function showBulkConfirmModal(action, groupIds) {
+    if (action === 'merge' || action === 'set_parent') return;
     const count = groupIds.length;
     const actionLabel = action === 'merge' ? 'Merge' : action === 'set_parent' ? 'Set Parent' : 'Dismiss';
     const actionDesc = action === 'merge'
@@ -421,13 +377,10 @@ function showBulkConfirmModal(action, groupIds) {
 }
 
 async function executeBulkAction(action, groupIds) {
-    const btn = action === 'merge'
-        ? document.getElementById('btn-merge-selected')
-        : action === 'set_parent'
-        ? document.getElementById('btn-parent-selected')
-        : document.getElementById('btn-dismiss-selected');
+    if (action !== 'dismiss') return;
+    const btn = document.getElementById('btn-dismiss-selected');
     const originalText = btn.textContent;
-    const actionLabel = action === 'merge' ? 'Merging' : action === 'set_parent' ? 'Setting parent for' : 'Dismissing';
+    const actionLabel = 'Dismissing';
 
     btn.disabled = true;
     btn.textContent = `${actionLabel} ${groupIds.length.toLocaleString()}...`;

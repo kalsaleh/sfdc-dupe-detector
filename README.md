@@ -1,8 +1,36 @@
-# Salesforce Duplicate Detector
+# Duplicate review
 
-A local web app for finding, reviewing, and merging duplicate Salesforce accounts.
+Read-only review of duplicate accounts from a CSV you already have. The file is parsed in the browser. It is not uploaded. The app does not call Salesforce or Snowflake.
 
-It exports Account and User data through the Salesforce CLI you already use, runs a configurable matching pipeline, and gives you a review UI before anything is merged back into Salesforce.
+On upload, the headers are detected and the match columns are suggested: account name (fuzzy), website, domain, LinkedIn company URL, LinkedIn company ID, and ZoomInfo company ID. Confirm or change that mapping before matching runs. If the headers are not recognized, choose the columns yourself. Parent, country, stage, and ARR are not match keys. They only suggest which record should survive. Dismiss hides a group in this browser.
+
+Do not commit account CSVs.
+
+## Run locally
+
+From the repository root:
+
+```bash
+python3 -m http.server 8000 --directory web
+```
+
+Open [http://127.0.0.1:8000](http://127.0.0.1:8000) and upload a CSV. Use the local server. Opening `index.html` as a file will not run the matcher.
+
+```bash
+node --test web/test/*.test.mjs
+```
+
+## Publish on Vercel
+
+Import this repository. `vercel.json` builds a static site from the `web` directory. No environment variables and no Salesforce credentials are required. After it deploys, open the site and upload the CSV there. The file still stays in the browser.
+
+## Salesforce writes are disabled
+
+Account merge, set-parent, `Account.update`, and `AccountContactRelation.delete` are removed. The legacy server returns 403 for merge and set-parent. Its dismiss button only updates the local SQLite file. The browser app does not have those actions.
+
+## Legacy local server
+
+The Python app below can still export and match through the Salesforce CLI on your machine. It cannot merge or update Salesforce. The browser app above is the one to publish.
 
 ## What is in this open-source copy
 
