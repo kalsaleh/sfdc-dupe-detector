@@ -169,7 +169,13 @@ test("groups exact keys, keeps country out of matching, and suggests the parent"
   const northwind = groups.find((group) => ids(group).includes("001000000000050"));
   assert.ok(northwind);
   assert.deepEqual(northwind.matchTypes, ["name"]);
+  assert.notEqual(northwind.tier, 1);
+  assert.equal(northwind.signals[0].type, "name");
   assert.equal(northwind.survivorKey, "001000000000050");
+  assert.equal(acme.tier, 1);
+  assert.ok(acme.signals.some((signal) => signal.value === "acme.com" && signal.types.includes("domain")));
+  assert.equal(umbrella.tier, 1);
+  assert.ok(umbrella.signals.some((signal) => signal.types.includes("linkedin_id") && signal.value === "12345"));
 
   const parent = groups.find((group) => ids(group).includes("001000000000070"));
   assert.equal(parent.survivorKey, "001000000000070");
@@ -179,4 +185,90 @@ test("groups exact keys, keeps country out of matching, and suggests the parent"
   assert.equal(stage.survivorKey, "001000000000080");
   assert.ok(computeScore("northwind traders", "northwind trader") >= 85);
   assert.equal(computeScore("acme", "acme international logistics"), 0);
+  assert.equal(computeScore("orange", "orange business services"), 0);
+  assert.equal(computeScore("siemens", "siemens energy"), 0);
+  assert.equal(computeScore("philips", "philips lighting"), 0);
+  assert.equal(computeScore("orange belgium", "orange france"), 0);
+});
+
+test("brand tokens do not create a tier 1 group, and exact identifiers still do", () => {
+  const headers = [
+    "Salesforce account ID",
+    "Account name",
+    "Website",
+    "Domain",
+    "LinkedIn company URL",
+    "LinkedIn company ID (parsed from URL)",
+    "ZoomInfo company ID",
+  ];
+  const blank = ["", "", "", "", ""];
+  const rows = [
+    ["O-1", "Orange", ...blank],
+    ["O-2", "Orange", ...blank],
+    ["O-3", "Orange Business Services", ...blank],
+    ["O-4", "Orange Cyberdefense", ...blank],
+    ["O-5", "Orange Belgium", ...blank],
+    ["O-6", "Orange France", ...blank],
+    ["S-1", "Siemens", ...blank],
+    ["S-2", "Siemens Energy", ...blank],
+    ["S-3", "Siemens Healthineers", ...blank],
+    ["P-1", "Philips", ...blank],
+    ["P-2", "Philips Lighting", ...blank],
+    ["P-3", "Philips Healthcare", ...blank],
+    ["P-4", "Koninklijke Philips", ...blank],
+    ["P-5", "Philips", "https://www.philips.com", "philips.com", "", "", "ZI-PH"],
+    ["P-6", "Philips Healthcare", "https://philips.com/about", "", "", "", "ZI-PH"],
+    ["L-1", "Slug One", "", "", "https://www.linkedin.com/company/orange", "", ""],
+    ["L-2", "Slug Two", "", "", "https://www.linkedin.com/company/orange", "", ""],
+    ["Z-1", "Totally Unrelated", "", "", "", "", "ZI-ORANGE"],
+    ["Z-2", "Also Unrelated", "", "", "", "", "ZI-ORANGE"],
+  ];
+  const { mapping } = suggestMapping(headers);
+  const records = buildRecords(headers, rows, mapping);
+  const { groups } = findDuplicateGroups(records);
+  const withIds = (group) => group.memberKeys.map((key) => records.find((record) => record.key === key).id);
+
+  const containsBoth = (a, b) => groups.some((group) => {
+    const members = withIds(group);
+    return members.includes(a) && members.includes(b);
+  });
+
+  assert.equal(containsBoth("O-1", "O-3"), false);
+  assert.equal(containsBoth("O-1", "O-4"), false);
+  assert.equal(containsBoth("O-5", "O-6"), false);
+  assert.equal(containsBoth("S-1", "S-2"), false);
+  assert.equal(containsBoth("S-2", "S-3"), false);
+  assert.equal(containsBoth("P-1", "P-2"), false);
+  assert.equal(containsBoth("P-2", "P-3"), false);
+  assert.equal(containsBoth("P-1", "P-4"), false);
+
+  const orange = groups.find((group) => withIds(group).includes("O-1"));
+  assert.ok(orange);
+  assert.deepEqual(withIds(orange).sort(), ["O-1", "O-2"]);
+  assert.notEqual(orange.tier, 1);
+  assert.equal(orange.signals[0].label, "Same normalized account name");
+  assert.equal(orange.signals[0].value, "orange");
+
+  for (const group of groups) {
+    const members = withIds(group);
+    const brandOnly = members.every((id) => /^(O|S|P|L)-/.test(id));
+    if (brandOnly && !members.includes("P-5") && !members.includes("P-6")) assert.notEqual(group.tier, 1);
+  }
+
+  const philips = groups.find((group) => withIds(group).includes("P-5"));
+  assert.ok(philips);
+  assert.equal(philips.tier, 1);
+  assert.ok(withIds(philips).includes("P-6"));
+  assert.ok(philips.signals.some((signal) => signal.value === "philips.com" && signal.types.includes("website")));
+  assert.ok(philips.signals.some((signal) => signal.value === "ZI-PH" && signal.types.includes("zoominfo")));
+
+  const slug = groups.find((group) => withIds(group).includes("L-1"));
+  assert.ok(slug);
+  assert.equal(slug.tier, 2);
+  assert.ok(slug.signals.some((signal) => signal.value === "orange" && signal.types.includes("linkedin_url")));
+  assert.equal(slug.signals.some((signal) => signal.types.includes("linkedin_id")), false);
+
+  const zoom = groups.find((group) => withIds(group).includes("Z-1"));
+  assert.equal(zoom.tier, 1);
+  assert.ok(zoom.signals.some((signal) => signal.value === "ZI-ORANGE"));
 });

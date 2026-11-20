@@ -4,6 +4,8 @@ Read-only review of duplicate accounts from a CSV you already have. The file is 
 
 On upload, the headers are detected and the match columns are suggested: account name (fuzzy), website, domain, LinkedIn company URL, LinkedIn company ID, and ZoomInfo company ID. Confirm or change that mapping before matching runs. If the headers are not recognized, choose the columns yourself. Parent, country, stage, and ARR are not match keys. They only suggest which record should survive. Dismiss hides a group in this browser.
 
+Tier 1 is only a perfect match: the same normalized website, domain, LinkedIn company ID, or ZoomInfo company ID. A fuzzy name, or a shared token such as Orange, Siemens, or Philips inside otherwise different names, is never tier 1 by itself. The review list shows the tier, the match reason, the exact shared value, and each account name and ID.
+
 Do not commit account CSVs.
 
 ## Run locally

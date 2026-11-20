@@ -370,7 +370,7 @@ function mappingHtml() {
       <h2 class="section-title">Record identity</h2>
       ${roleBlock("identity")}
       <h2 class="section-title">Match on these columns</h2>
-      <p class="hint">Name is a fuzzy match. Website, domain, LinkedIn URL, LinkedIn company ID, and ZoomInfo company ID are exact.</p>
+      <p class="hint">Tier 1 is only an exact normalized website, domain, LinkedIn company ID, or ZoomInfo company ID. A similar name is never tier 1 by itself. LinkedIn company URL is exact, and a numeric company ID in that URL counts as the LinkedIn company ID.</p>
       ${roleBlock("match")}
       <h2 class="section-title">Survivor suggestion only</h2>
       <p class="hint">Parent, country, stage, and ARR never create a match. They only suggest which record should survive.</p>
@@ -526,6 +526,7 @@ function reviewHtml() {
         </div>
       </div>
       <p class="stats">${state.groups.length.toLocaleString()} groups from ${state.accountCount.toLocaleString()} accounts (${state.rowCount.toLocaleString()} rows). ${dismissedCount.toLocaleString()} dismissed in this browser.</p>
+      <p class="hint">Tier 1 means the same website, domain, LinkedIn company ID, or ZoomInfo company ID. Each row shows that shared value, then the account name and ID. A fuzzy name never makes tier 1.</p>
       ${state.warnings.map((warning) => `<p class="note" style="margin-bottom:0.5rem">${escapeHtml(warning)}</p>`).join("")}
       ${state.mapping.accountId && state.mapping.accountId.length ? "" : `<p class="note" style="margin-bottom:0.5rem">No account ID column is selected, so a dismissal is tied to the row number in this file.</p>`}
       <div class="toolbar">
@@ -557,17 +558,39 @@ function reviewHtml() {
 }
 
 function groupButton(group) {
-  const names = group.memberKeys.map((key) => state.records[key]?.name || "Account").slice(0, 3);
-  const extra = group.memberKeys.length > 3 ? ` +${group.memberKeys.length - 3}` : "";
-  const survivor = state.records[group.survivorKey];
   const dismissed = state.dismissed.has(signature(group));
+  const signals = (group.signals || []).slice(0, 3);
+  const reasons = signals.length
+    ? signals.map((signal) => `
+        <span class="reason">
+          <span>${escapeHtml(signal.label)}${signal.score && !signal.exact ? ` · ${Math.round(signal.score)}` : ""}</span>
+          ${signal.value ? `<span class="reason-value">${escapeHtml(signal.value)}</span>` : ""}
+        </span>
+      `).join("")
+    : `<span class="reason">${escapeHtml((group.explanations || [])[0] || "Match")}</span>`;
   return `
-    <button class="group-row" type="button" data-group="${group.id}" aria-current="${group.id === state.selectedId}">
-      <span class="names">${escapeHtml(names.join(", "))}${escapeHtml(extra)}</span>
-      <span class="meta">${group.matchTypes.map((type) => escapeHtml(MATCH_LABELS[type] || type)).join(" · ")} · ${group.score} · Tier ${group.tier}${dismissed ? " · Dismissed" : ""}</span>
-      <span class="survivor">Suggested survivor: ${escapeHtml(survivor?.name || "")}</span>
+    <button class="group-row ${dismissed ? "is-dismissed" : ""}" type="button" data-group="${group.id}" aria-current="${group.id === state.selectedId}">
+      <span class="group-head">
+        <span class="badge tier-${group.tier}">Tier ${group.tier}</span>
+        ${reasons}
+        ${dismissed ? `<span class="badge">Dismissed</span>` : ""}
+      </span>
+      ${memberLines(group, 6)}
     </button>
   `;
+}
+
+function memberLines(group, limit) {
+  const keys = group.memberKeys.slice(0, limit);
+  const extra = group.memberKeys.length - keys.length;
+  const lines = keys.map((key) => memberLine(key, key === group.survivorKey));
+  if (extra > 0) lines.push(`<span class="more-members">+${extra} more accounts</span>`);
+  return lines.join("");
+}
+
+function memberLine(key, survivor) {
+  const record = state.records[key] || {};
+  return `<span class="member-line${survivor ? " survivor" : ""}"><span class="member-name">${escapeHtml(record.name || "Account")}</span><span class="member-id">${escapeHtml(record.id || "")}</span></span>`;
 }
 
 function detailHtml(group) {
@@ -575,37 +598,39 @@ function detailHtml(group) {
   const survivor = state.records[group.survivorKey];
   const dismissed = state.dismissed.has(signature(group));
   const rows = fieldRows(members);
+  const matchedLabels = matchedFieldLabels(group);
   return `
     <article class="detail">
       <div class="actions" style="justify-content:space-between">
         <p class="hint">Group ${group.id}</p>
         <button class="ghost" id="close-detail" type="button">Close</button>
       </div>
+      <div class="chips" style="margin:0.2rem 0 0.7rem">
+        <span class="badge tier-${group.tier}">Tier ${group.tier}</span>
+        ${group.matchTypes.map((type) => `<span class="badge">${escapeHtml(MATCH_LABELS[type] || type)}</span>`).join("")}
+      </div>
+      ${pairingHtml(group)}
       <p class="hint">Suggested survivor</p>
       <h2>${escapeHtml(survivor?.name || "")}</h2>
-      <div class="chips" style="margin:0.4rem 0">
-        ${group.matchTypes.map((type) => `<span class="badge">${escapeHtml(MATCH_LABELS[type] || type)}</span>`).join("")}
-        <span class="badge tier-${group.tier}">${group.score} · Tier ${group.tier}</span>
-      </div>
+      <p class="member-id" style="margin-bottom:0.35rem">${escapeHtml(survivor?.id || "")}</p>
       <ul class="reasons">${group.survivorReasons.map((reason) => `<li>${escapeHtml(reason)}</li>`).join("")}</ul>
       ${group.hierarchy ? `<p class="note plain">This looks like a parent and related records. The suggestion does not change Salesforce.</p>` : ""}
       <div class="actions" style="margin:0.8rem 0">
         <button class="primary" id="dismiss" type="button">${dismissed ? "Restore" : "Dismiss"}</button>
       </div>
       <p class="hint" style="margin-bottom:0.7rem">${dismissed ? "Dismissed in this browser only." : "Dismiss hides this group on this browser. It does not update Salesforce."}</p>
-      ${group.explanations.map((line) => `<p class="hint" style="margin-bottom:0.25rem">${escapeHtml(line)}</p>`).join("")}
       <div class="table-scroll">
         <table>
           <thead>
             <tr>
               <th>Field</th>
-              ${members.map((member) => `<th class="${member.key === group.survivorKey ? "survivor" : ""}">${escapeHtml(member.name)}</th>`).join("")}
+              ${members.map((member) => `<th class="${member.key === group.survivorKey ? "survivor" : ""}"><span class="col-name">${escapeHtml(member.name)}</span><span class="member-id">${escapeHtml(member.id)}</span></th>`).join("")}
             </tr>
           </thead>
           <tbody>
             ${rows.map((row) => `
-              <tr>
-                <th>${escapeHtml(row.label)}</th>
+              <tr class="${matchedLabels.has(row.label) ? "matched" : ""}">
+                <th>${escapeHtml(row.label)}${matchedLabels.has(row.label) ? ` <span class="badge">shared</span>` : ""}</th>
                 ${row.values.map((value, index) => `<td class="${row.differs ? "diff" : ""} ${members[index].key === group.survivorKey ? "survivor" : ""}">${escapeHtml(value)}</td>`).join("")}
               </tr>
             `).join("")}
@@ -614,6 +639,62 @@ function detailHtml(group) {
       </div>
     </article>
   `;
+}
+
+function pairingHtml(group) {
+  const signals = group.signals || [];
+  const blocks = signals.map((signal) => {
+    const keys = signal.memberKeys && signal.memberKeys.length ? signal.memberKeys : group.memberKeys;
+    const who = keys.slice(0, 6).map((key) => {
+      const record = state.records[key] || {};
+      return `${record.name || "Account"} (${record.id || ""})`;
+    });
+    const extra = keys.length > 6 ? ` +${keys.length - 6}` : "";
+    const pairs = (signal.exact ? [] : (signal.namePairs || [])).slice(0, 4).map((pair) => {
+      const left = state.records[pair.leftKey] || {};
+      const right = state.records[pair.rightKey] || {};
+      return `<li>${escapeHtml(left.name || "Account")} (${escapeHtml(left.id || "")}) paired with ${escapeHtml(right.name || "Account")} (${escapeHtml(right.id || "")}), score ${pair.score}.</li>`;
+    }).join("");
+    const via = signal.sources && signal.sources.length ? `Columns: ${signal.sources.join(", ")}` : "";
+    return `
+      <li>
+        <span class="pair-label">${escapeHtml(signal.label)}${signal.score && !signal.exact ? ` · ${Math.round(signal.score)}` : ""}</span>
+        ${signal.value ? `<span class="reason-value">${escapeHtml(signal.value)}</span>` : ""}
+        <span class="hint">${escapeHtml(who.join(" · "))}${escapeHtml(extra)}</span>
+        ${via ? `<span class="hint">${escapeHtml(via)}</span>` : ""}
+        ${pairs ? `<ul class="pair-accounts">${pairs}</ul>` : ""}
+      </li>
+    `;
+  }).join("");
+  const fallback = blocks ? "" : (group.explanations || []).map((line) => `<li>${escapeHtml(line)}</li>`).join("");
+  const tierNote = group.tier === 1
+    ? "Tier 1 because these accounts share an exact normalized website, domain, LinkedIn company ID, or ZoomInfo company ID."
+    : "This is not tier 1. Tier 1 requires the same normalized website, domain, LinkedIn company ID, or ZoomInfo company ID. A shared or similar name does not qualify.";
+  return `
+    <div class="pair-box">
+      <h3>Why these rows were paired</h3>
+      <ul class="pair-list">${blocks || fallback}</ul>
+      <p class="hint">${tierNote}</p>
+    </div>
+  `;
+}
+
+function matchedFieldLabels(group) {
+  const labels = new Set();
+  const byType = {
+    name: "Account name",
+    website: "Website",
+    domain: "Domain",
+    linkedin_url: "LinkedIn company URL",
+    linkedin_id: "LinkedIn company ID",
+    zoominfo: "ZoomInfo company ID",
+  };
+  for (const signal of group.signals || []) {
+    for (const type of signal.types || [signal.type]) {
+      if (byType[type]) labels.add(byType[type]);
+    }
+  }
+  return labels;
 }
 
 function fieldRows(members) {
@@ -641,10 +722,13 @@ function visibleGroups() {
     if (state.tier !== "all" && String(group.tier) !== state.tier) return false;
     if (state.typeFilter !== "all" && !group.matchTypes.includes(state.typeFilter)) return false;
     if (!query) return true;
-    const haystack = group.memberKeys.map((key) => {
-      const record = state.records[key];
-      return `${record?.name || ""} ${record?.id || ""}`;
-    }).join(" ").toLowerCase();
+    const haystack = [
+      ...group.memberKeys.map((key) => {
+        const record = state.records[key];
+        return `${record?.name || ""} ${record?.id || ""}`;
+      }),
+      ...(group.signals || []).map((signal) => `${signal.label || ""} ${signal.value || ""}`),
+    ].join(" ").toLowerCase();
     return haystack.includes(query);
   });
 }

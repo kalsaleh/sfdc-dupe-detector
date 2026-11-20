@@ -65,9 +65,27 @@ function tokenSetRatio(a, b) {
   );
 }
 
+function sharesOnlyAGenericToken(a, b) {
+  const left = a.split(" ").filter(Boolean);
+  const right = b.split(" ").filter(Boolean);
+  if (!left.length || !right.length) return false;
+  const [shorter, longer] = left.length <= right.length ? [left, right] : [right, left];
+  const longerSet = new Set(longer);
+  if (shorter.length < longer.length && shorter.every((token) => longerSet.has(token))) return true;
+
+  const leftSet = new Set(left);
+  const rightSet = new Set(right);
+  const shared = [...leftSet].filter((token) => rightSet.has(token));
+  const leftOnly = [...leftSet].filter((token) => !rightSet.has(token));
+  const rightOnly = [...rightSet].filter((token) => !leftSet.has(token));
+  if (!shared.length || !leftOnly.length || !rightOnly.length) return false;
+  return indelSimilarity(a, b) < 92 && tokenSortRatio(a, b) < 92;
+}
+
 export function computeScore(a, b) {
   if (!a || !b) return 0;
   if (a === b) return 100;
+  if (sharesOnlyAGenericToken(a, b)) return 0;
   const minLength = Math.min(a.length, b.length);
   const maxLength = Math.max(a.length, b.length);
   const upper = 100 * (1 - Math.abs(a.length - b.length) / (a.length + b.length));

@@ -24,13 +24,14 @@ const BONUS = {
   name: 3,
 };
 const TYPE_ORDER = ["zoominfo", "website", "domain", "linkedin_id", "linkedin_url", "name"];
+const TIER1 = new Set(["zoominfo", "website", "domain", "linkedin_id"]);
 const TYPE_LABEL = {
   zoominfo: "ZoomInfo company ID",
   website: "website",
   domain: "domain",
   linkedin_id: "LinkedIn company ID",
   linkedin_url: "LinkedIn company URL",
-  name: "name",
+  name: "account name",
 };
 
 const STAGE_RANK = {
@@ -141,7 +142,10 @@ export function findDuplicateGroups(records, onProgress) {
   records.forEach((record, index) => {
     for (const item of record.websites) addHost(item.host, index, "website", item.source);
     for (const item of record.domains) addHost(item.host, index, "domain", item.source);
-    for (const item of record.linkedinUrls) addToken("li", item.token, index, "linkedin_url", item.source);
+    for (const item of record.linkedinUrls) {
+      addToken("li", item.token, index, "linkedin_url", item.source);
+      if (/^\d+$/.test(item.token)) addToken("li", item.token, index, "linkedin_id", item.source);
+    }
     for (const item of record.linkedinIds) addToken("li", item.token, index, "linkedin_id", item.source);
     for (const item of record.zoominfoIds) addToken("zi", item.token, index, "zoominfo", item.source);
   });
@@ -165,6 +169,7 @@ export function findDuplicateGroups(records, onProgress) {
       sources: [...bucket.sources],
       aliasOnly: Boolean(bucket.aliasOnly),
       count: indexes.length,
+      indexes,
     });
   }
 
@@ -223,18 +228,23 @@ export function findDuplicateGroups(records, onProgress) {
 
 function buildExactGroup(indexes, items, records) {
   const members = indexes.map((index) => records[index]);
-  const nameScore = bestNameScore(members);
+  const nameMatch = bestNameScore(members);
   const types = new Set();
   for (const item of items) for (const type of item.types) types.add(type);
-  if (nameScore >= FUZZY_MIN) types.add("name");
-  const score = scoreTypes([...types], items, nameScore, members.length);
+  if (nameMatch.score >= FUZZY_MIN) types.add("name");
+  const score = scoreTypes([...types], items, nameMatch.score, members.length);
   const suggestion = suggestSurvivor(members);
+  const signals = items.map((item) => exactSignal(item, records));
+  if (nameMatch.score >= FUZZY_MIN) signals.push(nameSignal(members, nameMatch));
+  signals.sort((a, b) => signalRank(a) - signalRank(b) || a.label.localeCompare(b.label));
+  const matchTypes = TYPE_ORDER.filter((type) => types.has(type));
   return {
     memberKeys: suggestion.ordered.map((record) => record.key),
-    matchTypes: TYPE_ORDER.filter((type) => types.has(type)),
+    matchTypes,
     score,
-    tier: tierFor(score),
-    explanations: explanationsFor(items, nameScore),
+    tier: tierFor(matchTypes, nameMatch.score),
+    signals,
+    explanations: signals.map((signal) => signal.text),
     survivorKey: suggestion.survivor.key,
     survivorReasons: suggestion.reasons,
     countriesDiffer: suggestion.countriesDiffer,
@@ -276,27 +286,82 @@ function scoreTypes(types, items, nameScore, groupSize) {
   return Math.round(score);
 }
 
-function explanationsFor(items, nameScore) {
-  const lines = items.map((item) => {
-    const labels = item.types.map((type) => TYPE_LABEL[type] || type);
-    const via = item.sources.length ? ` (${item.sources.join(", ")})` : "";
-    return `Same ${labels.join(" and ")}: ${item.value}${via}. ${item.count} accounts.`;
-  });
-  if (nameScore >= FUZZY_MIN) lines.push(`Similar account names (score ${Math.round(nameScore)}).`);
-  return lines;
+function exactSignal(item, records) {
+  const types = TYPE_ORDER.filter((type) => item.types.includes(type) && type !== "name");
+  const shown = types.filter((type) => TIER1.has(type));
+  const labelTypes = shown.length ? shown : types;
+  const label = `Same ${labelTypes.map((type) => TYPE_LABEL[type] || type).join(" and ")}`;
+  const sources = item.sources || [];
+  const via = sources.length ? ` (${sources.join(", ")})` : "";
+  const memberKeys = [...new Set((item.indexes || []).map((index) => records[index] && records[index].key).filter(Boolean))];
+  return {
+    type: labelTypes[0] || types[0] || "domain",
+    types,
+    label,
+    value: item.value,
+    score: null,
+    sources,
+    memberKeys,
+    text: `${label}: ${item.value}${via}.`,
+  };
+}
+
+function nameSignal(members, nameMatch) {
+  const norms = members.map((record) => record.nameNorm).filter(Boolean);
+  const exact = norms.length === members.length && new Set(norms).size === 1;
+  const score = Math.round(nameMatch.score);
+  const left = nameMatch.left;
+  const right = nameMatch.right;
+  const value = exact ? norms[0] : `${left ? left.nameNorm : ""} ≈ ${right ? right.nameNorm : ""}`.trim();
+  const label = exact ? "Same normalized account name" : "Similar account name";
+  const namePairs = nameMatch.pairs || [];
+  const text = exact
+    ? `${label}: ${value}.`
+    : `${label} (${score}): ${value}.`;
+  return {
+    type: "name",
+    types: ["name"],
+    label,
+    value,
+    score,
+    exact,
+    sources: [],
+    memberKeys: members.map((record) => record.key),
+    namePairs,
+    text,
+  };
+}
+
+function signalRank(signal) {
+  const types = signal.types || [signal.type];
+  if (types.some((type) => TIER1.has(type))) return 0;
+  if (types.includes("linkedin_url")) return 1;
+  return 2;
 }
 
 function bestNameScore(members) {
   let best = 0;
+  let left = null;
+  let right = null;
+  const pairs = [];
   for (let i = 0; i < members.length; i++) {
     for (let j = i + 1; j < members.length; j++) {
-      const left = members[i].nameNorm;
-      const right = members[j].nameNorm;
-      if (!left || !right) continue;
-      best = Math.max(best, computeScore(left, right));
+      const a = members[i].nameNorm;
+      const b = members[j].nameNorm;
+      if (!a || !b) continue;
+      const score = computeScore(a, b);
+      if (score >= FUZZY_MIN) {
+        pairs.push({ leftKey: members[i].key, rightKey: members[j].key, score: Math.round(score) });
+      }
+      if (score > best) {
+        best = score;
+        left = members[i];
+        right = members[j];
+      }
     }
   }
-  return best;
+  pairs.sort((a, b) => b.score - a.score || a.leftKey.localeCompare(b.leftKey));
+  return { score: best, left, right, pairs: pairs.slice(0, 8) };
 }
 
 function allNamesDiffer(indexes, records) {
@@ -382,14 +447,36 @@ function fuzzyNameGroups(records, uncovered, onFraction) {
     if (best < FUZZY_MIN) continue;
     const members = cluster.map((index) => records[index]);
     const suggestion = suggestSurvivor(members);
-    const names = members.map((record) => record.name || "(no name)").slice(0, 3);
+    const pairs = [];
+    for (let i = 0; i < cluster.length; i++) {
+      for (let j = i + 1; j < cluster.length; j++) {
+        const a = cluster[i];
+        const b = cluster[j];
+        const pairKey = a < b ? `${a}|${b}` : `${b}|${a}`;
+        if (!pairwise.has(pairKey)) continue;
+        pairs.push({
+          leftKey: records[a].key,
+          rightKey: records[b].key,
+          score: Math.round(pairwise.get(pairKey)),
+        });
+      }
+    }
+    pairs.sort((a, b) => b.score - a.score || a.leftKey.localeCompare(b.leftKey));
+    let left = null;
+    let right = null;
+    if (pairs.length) {
+      left = members.find((record) => record.key === pairs[0].leftKey) || null;
+      right = members.find((record) => record.key === pairs[0].rightKey) || null;
+    }
+    const signal = nameSignal(members, { score: best, left, right, pairs: pairs.slice(0, 8) });
     const score = scoreTypes(["name"], [], best, members.length);
     groups.push({
       memberKeys: suggestion.ordered.map((record) => record.key),
       matchTypes: ["name"],
       score,
-      tier: tierFor(score),
-      explanations: [`Fuzzy name match (score ${Math.round(best)}): ${names.join(", ")}${members.length > 3 ? "…" : ""}.`],
+      tier: tierFor(["name"], best),
+      signals: [signal],
+      explanations: [signal.text],
       survivorKey: suggestion.survivor.key,
       survivorReasons: suggestion.reasons,
       countriesDiffer: suggestion.countriesDiffer,
@@ -406,9 +493,10 @@ function addNeighbor(neighbors, from, to) {
   else neighbors.set(from, new Set([to]));
 }
 
-function tierFor(score) {
-  if (score >= 95) return 1;
-  if (score >= 80) return 2;
+function tierFor(types, nameScore = 0) {
+  if (types.some((type) => TIER1.has(type))) return 1;
+  if (types.includes("linkedin_url")) return 2;
+  if (types.includes("name") && nameScore >= 95) return 2;
   return 3;
 }
 
