@@ -2,9 +2,9 @@ import { computeScore } from "./fuzzy.js";
 import { formatArr, sfKey } from "./normalize.js";
 
 const MAX_KEY_GROUP = 10;
-const MAX_COMPONENT = 15;
 const MAX_BLOCK = 500;
 const MAX_CLUSTER = 10;
+const MAX_DISTINCT_NAMES = 3;
 const FUZZY_MIN = 85;
 const MIN_NAME = 3;
 
@@ -23,14 +23,15 @@ const BONUS = {
   linkedin_url: 7,
   name: 3,
 };
-const TYPE_ORDER = ["zoominfo", "website", "domain", "linkedin_id", "linkedin_url", "name"];
-const TIER1 = new Set(["zoominfo", "website", "domain", "linkedin_id"]);
+const TYPE_ORDER = ["website", "domain", "linkedin_id", "zoominfo", "linkedin_url", "alias", "name"];
+const TIER1 = new Set(["website", "domain", "linkedin_id"]);
 const TYPE_LABEL = {
   zoominfo: "ZoomInfo company ID",
-  website: "website",
-  domain: "domain",
+  website: "primary website",
+  domain: "primary domain",
   linkedin_id: "LinkedIn company ID",
   linkedin_url: "LinkedIn company URL",
+  alias: "domain alias",
   name: "account name",
 };
 
@@ -57,140 +58,90 @@ const PARENT_SUFFIXES = new Set([
 
 export function findDuplicateGroups(records, onProgress) {
   const warnings = [];
-  const parent = records.map((_, index) => index);
-  const size = records.map(() => 1);
-  const evidence = records.map(() => []);
   let skippedLarge = 0;
-  let skippedPortal = 0;
-  let skippedWide = 0;
-
-  const find = (index) => {
-    let cursor = index;
-    while (parent[cursor] !== cursor) {
-      parent[cursor] = parent[parent[cursor]];
-      cursor = parent[cursor];
-    }
-    return cursor;
-  };
-
-  const attach = (indexes, item) => {
-    const roots = [];
-    const seen = new Set();
-    let total = 0;
-    for (const index of indexes) {
-      const root = find(index);
-      if (seen.has(root)) continue;
-      seen.add(root);
-      roots.push(root);
-      total += size[root];
-    }
-    if (total < 2) return;
-    if (total > MAX_COMPONENT) {
-      skippedWide += 1;
-      return;
-    }
-    const root = roots[0];
-    for (let i = 1; i < roots.length; i++) {
-      parent[roots[i]] = root;
-      size[root] += size[roots[i]];
-      if (evidence[roots[i]].length) {
-        evidence[root].push(...evidence[roots[i]]);
-        evidence[roots[i]] = [];
-      }
-    }
-    evidence[root].push(item);
-  };
-
+  let skippedMixed = 0;
   const buckets = new Map();
-  const bucketFor = (id, seed) => {
+
+  const addKeyed = (id, index, type, value, source) => {
     let bucket = buckets.get(id);
     if (!bucket) {
-      bucket = seed;
+      bucket = { type, value, indexes: [], sources: new Set(), kinds: new Set() };
       buckets.set(id, bucket);
     }
-    return bucket;
-  };
-
-  const addHost = (host, index, kind, source) => {
-    const bucket = bucketFor(`host\u0000${host}`, {
-      space: "host",
-      value: host,
-      indexes: [],
-      kinds: new Set(),
-      sources: new Set(),
-      aliasOnly: true,
-    });
     bucket.indexes.push(index);
-    bucket.kinds.add(kind);
     bucket.sources.add(source);
-    if (kind !== "domain" || !/alias/i.test(source)) bucket.aliasOnly = false;
-  };
-
-  const addToken = (space, token, index, kind, source) => {
-    const bucket = bucketFor(`${space}\u0000${token}`, {
-      space,
-      value: token,
-      indexes: [],
-      kinds: new Set(),
-      sources: new Set(),
-    });
-    bucket.indexes.push(index);
-    bucket.kinds.add(kind);
-    bucket.sources.add(source);
+    bucket.kinds.add(type);
   };
 
   records.forEach((record, index) => {
-    for (const item of record.websites) addHost(item.host, index, "website", item.source);
-    for (const item of record.domains) addHost(item.host, index, "domain", item.source);
-    for (const item of record.linkedinUrls) {
-      addToken("li", item.token, index, "linkedin_url", item.source);
-      if (/^\d+$/.test(item.token)) addToken("li", item.token, index, "linkedin_id", item.source);
+    for (const item of record.websites) {
+      if (!item.primary) continue;
+      addKeyed(`web\u0000${item.host}`, index, "website", item.host, item.source);
     }
-    for (const item of record.linkedinIds) addToken("li", item.token, index, "linkedin_id", item.source);
-    for (const item of record.zoominfoIds) addToken("zi", item.token, index, "zoominfo", item.source);
+    for (const item of record.domains) {
+      const type = item.primary ? "domain" : "alias";
+      addKeyed(`${type}\u0000${item.host}`, index, type, item.host, item.source);
+    }
+    for (const item of record.linkedinIds) {
+      addKeyed(`li\u0000${item.token}`, index, "linkedin_id", item.token, item.source);
+    }
+    for (const item of record.linkedinUrls) {
+      if (/^\d+$/.test(item.token)) {
+        addKeyed(`li\u0000${item.token}`, index, "linkedin_id", item.token, item.source);
+        buckets.get(`li\u0000${item.token}`).kinds.add("linkedin_url");
+      } else {
+        addKeyed(`url\u0000${item.token}`, index, "linkedin_url", item.token, item.source);
+      }
+    }
+    for (const item of record.zoominfoIds) {
+      addKeyed(`zi\u0000${item.token}`, index, "zoominfo", item.token, item.source);
+    }
   });
 
   if (onProgress) onProgress({ phase: "Comparing websites, domains, and IDs", pct: 40 });
 
+  const pending = [];
   for (const bucket of buckets.values()) {
     const indexes = [...new Set(bucket.indexes)];
     if (indexes.length < 2) continue;
+    const strong = bucket.type === "website" || bucket.type === "domain" || bucket.type === "linkedin_id";
     if (indexes.length > MAX_KEY_GROUP) {
       skippedLarge += 1;
+      emitSameNameChunks(indexes, bucket, records, pending);
+      skippedMixed += 1;
       continue;
     }
-    if (bucket.space === "host" && indexes.length >= 3 && allNamesDiffer(indexes, records)) {
-      skippedPortal += 1;
+    const facts = nameFacts(indexes.map((index) => records[index]));
+    const fullClique = (strong && facts.distinct <= MAX_DISTINCT_NAMES)
+      || (bucket.type === "zoominfo" && facts.same)
+      || (bucket.type === "linkedin_url" && facts.distinct <= MAX_DISTINCT_NAMES)
+      || (bucket.type === "alias" && facts.same);
+    if (fullClique) {
+      pending.push(buildKeyGroup(indexes, bucket, records));
       continue;
     }
-    attach(indexes, {
-      types: [...bucket.kinds],
-      value: bucket.value,
-      sources: [...bucket.sources],
-      aliasOnly: Boolean(bucket.aliasOnly),
-      count: indexes.length,
-      indexes,
-    });
+    if (strong || bucket.type === "zoominfo" || bucket.type === "linkedin_url") {
+      emitSameNameChunks(indexes, bucket, records, pending);
+      if (bucket.type === "zoominfo" && indexes.length === 2) pending.push(buildKeyGroup(indexes, bucket, records));
+      else if (indexes.length > 2) skippedMixed += 1;
+      continue;
+    }
+    if (bucket.type === "alias" && indexes.length === 2) {
+      pending.push(buildKeyGroup(indexes, bucket, records));
+      continue;
+    }
+    if (indexes.length > 2) skippedMixed += 1;
   }
 
-  const components = new Map();
-  records.forEach((_, index) => {
-    const root = find(index);
-    if (size[root] < 2 || !evidence[root].length) return;
-    if (!components.has(root)) components.set(root, []);
-    components.get(root).push(index);
-  });
-
-  const covered = new Set();
-  const groups = [];
-  for (const indexes of components.values()) {
-    indexes.forEach((index) => covered.add(index));
-    groups.push(buildExactGroup(indexes, evidence[find(indexes[0])], records));
+  const exactGroups = mergeGroups(pending);
+  const tier1Keys = new Set();
+  for (const group of exactGroups) {
+    if (group.tier !== 1) continue;
+    for (const key of group.memberKeys) tier1Keys.add(key);
   }
-
   const uncovered = [];
-  records.forEach((_, index) => {
-    if (!covered.has(index)) uncovered.push(index);
+  records.forEach((record, index) => {
+    if (!tier1Keys.has(record.key)) uncovered.push(index);
   });
 
   const nameResult = fuzzyNameGroups(records, uncovered, (fraction) => {
@@ -201,20 +152,17 @@ export function findDuplicateGroups(records, onProgress) {
       });
     }
   });
-  groups.push(...nameResult.groups);
+  const groups = mergeGroups([...exactGroups, ...nameResult.groups]);
   if (nameResult.skippedBlocks) {
     warnings.push(
       `Name matching skipped ${nameResult.skippedBlocks} very common name prefixes because each contained more than ${MAX_BLOCK} accounts.`,
     );
   }
   if (skippedLarge) {
-    warnings.push(`${skippedLarge} shared values were ignored because more than ${MAX_KEY_GROUP} accounts used them.`);
+    warnings.push(`${skippedLarge} shared values were split because more than ${MAX_KEY_GROUP} accounts used them.`);
   }
-  if (skippedPortal) {
-    warnings.push(`${skippedPortal} website or domain values were ignored because every account using them has a different name.`);
-  }
-  if (skippedWide) {
-    warnings.push(`${skippedWide} connections were left out because they would have grouped more than ${MAX_COMPONENT} accounts.`);
+  if (skippedMixed) {
+    warnings.push(`${skippedMixed} shared ZoomInfo IDs, websites, domains, or aliases were not kept as one tier 1 group because the account names differ.`);
   }
 
   groups.sort((a, b) => a.tier - b.tier || b.score - a.score || b.memberKeys.length - a.memberKeys.length || a.memberKeys[0].localeCompare(b.memberKeys[0]));
@@ -226,31 +174,119 @@ export function findDuplicateGroups(records, onProgress) {
   return { groups, warnings, recordByKey };
 }
 
-function buildExactGroup(indexes, items, records) {
+function emitSameNameChunks(indexes, bucket, records, pending) {
+  const byName = new Map();
+  for (const index of indexes) {
+    const name = records[index].nameNorm;
+    if (!name) continue;
+    const list = byName.get(name);
+    if (list) list.push(index);
+    else byName.set(name, [index]);
+  }
+  for (const slice of byName.values()) {
+    if (slice.length < 2) continue;
+    for (let start = 0; start < slice.length; start += MAX_CLUSTER) {
+      const chunk = slice.slice(start, start + MAX_CLUSTER);
+      if (chunk.length >= 2) pending.push(buildKeyGroup(chunk, bucket, records));
+    }
+  }
+}
+
+function buildKeyGroup(indexes, bucket, records) {
   const members = indexes.map((index) => records[index]);
+  const kinds = [...bucket.kinds];
+  const label = labelFor(bucket.type, kinds);
+  const sources = [...bucket.sources];
+  const via = sources.length ? ` (${sources.join(", ")})` : "";
+  const types = kinds.includes("linkedin_id") && kinds.includes("linkedin_url")
+    ? ["linkedin_id", "linkedin_url"]
+    : [bucket.type];
+  const signals = [{
+    type: types[0],
+    types,
+    label,
+    value: bucket.value,
+    score: null,
+    sources,
+    memberKeys: members.map((record) => record.key),
+    text: `${label}: ${bucket.value}${via}.`,
+  }];
+  const facts = nameFacts(members);
   const nameMatch = bestNameScore(members);
-  const types = new Set();
-  for (const item of items) for (const type of item.types) types.add(type);
-  if (nameMatch.score >= FUZZY_MIN) types.add("name");
-  const score = scoreTypes([...types], items, nameMatch.score, members.length);
+  if (facts.same || (members.length === 2 && nameMatch.score >= FUZZY_MIN)) {
+    signals.push(nameSignal(members, nameMatch));
+  }
+  return finalize(members, signals);
+}
+
+function labelFor(type, kinds) {
+  if (type === "website") return "Same primary website";
+  if (type === "domain") return "Same primary domain";
+  if (type === "alias") return "Same domain alias";
+  if (type === "linkedin_id" || kinds.includes("linkedin_id")) return "Same LinkedIn company ID";
+  if (type === "linkedin_url") return "Same LinkedIn company URL";
+  if (type === "zoominfo") return "Same ZoomInfo company ID";
+  return `Same ${TYPE_LABEL[type] || type}`;
+}
+
+function finalize(members, signals) {
+  const facts = nameFacts(members);
   const suggestion = suggestSurvivor(members);
-  const signals = items.map((item) => exactSignal(item, records));
-  if (nameMatch.score >= FUZZY_MIN) signals.push(nameSignal(members, nameMatch));
-  signals.sort((a, b) => signalRank(a) - signalRank(b) || a.label.localeCompare(b.label));
-  const matchTypes = TYPE_ORDER.filter((type) => types.has(type));
-  return {
+  const group = {
     memberKeys: suggestion.ordered.map((record) => record.key),
-    matchTypes,
-    score,
-    tier: tierFor(matchTypes, nameMatch.score),
     signals,
-    explanations: signals.map((signal) => signal.text),
+    nameDistinct: facts.distinct,
+    nameSame: facts.same,
+    score: 0,
     survivorKey: suggestion.survivor.key,
     survivorReasons: suggestion.reasons,
     countriesDiffer: suggestion.countriesDiffer,
     countries: suggestion.countries,
     hierarchy: suggestion.hierarchy,
   };
+  refresh(group);
+  const nameScore = group.signals.find((signal) => signal.type === "name")?.score || 0;
+  group.score = scoreTypes(group.matchTypes, [], nameScore, members.length);
+  return group;
+}
+
+function refresh(group) {
+  const types = [];
+  for (const signal of group.signals) {
+    for (const type of signal.types || [signal.type]) {
+      if (!types.includes(type)) types.push(type);
+    }
+  }
+  group.matchTypes = TYPE_ORDER.filter((type) => types.includes(type));
+  const nameScore = group.signals.find((signal) => signal.type === "name")?.score || 0;
+  group.tier = tierFor(group.matchTypes, nameScore, { distinct: group.nameDistinct, same: group.nameSame });
+  group.signals.sort((a, b) => signalRank(a) - signalRank(b) || a.label.localeCompare(b.label));
+  group.explanations = group.signals.map((signal) => signal.text);
+}
+
+function mergeGroups(list) {
+  const bySignature = new Map();
+  for (const group of list) {
+    const signature = [...group.memberKeys].sort().join("\0");
+    const existing = bySignature.get(signature);
+    if (!existing) {
+      bySignature.set(signature, group);
+      continue;
+    }
+    for (const signal of group.signals) {
+      const duplicate = existing.signals.some((item) => item.type === signal.type && item.value === signal.value && item.label === signal.label);
+      if (!duplicate) existing.signals.push(signal);
+    }
+    existing.score = Math.max(existing.score, group.score);
+    refresh(existing);
+  }
+  return [...bySignature.values()];
+}
+
+function nameFacts(members) {
+  const norms = members.map((record) => record.nameNorm).filter(Boolean);
+  const distinct = new Set(norms).size;
+  return { distinct, same: norms.length === members.length && distinct === 1 };
 }
 
 function scoreTypes(types, items, nameScore, groupSize) {
@@ -286,26 +322,6 @@ function scoreTypes(types, items, nameScore, groupSize) {
   return Math.round(score);
 }
 
-function exactSignal(item, records) {
-  const types = TYPE_ORDER.filter((type) => item.types.includes(type) && type !== "name");
-  const shown = types.filter((type) => TIER1.has(type));
-  const labelTypes = shown.length ? shown : types;
-  const label = `Same ${labelTypes.map((type) => TYPE_LABEL[type] || type).join(" and ")}`;
-  const sources = item.sources || [];
-  const via = sources.length ? ` (${sources.join(", ")})` : "";
-  const memberKeys = [...new Set((item.indexes || []).map((index) => records[index] && records[index].key).filter(Boolean))];
-  return {
-    type: labelTypes[0] || types[0] || "domain",
-    types,
-    label,
-    value: item.value,
-    score: null,
-    sources,
-    memberKeys,
-    text: `${label}: ${item.value}${via}.`,
-  };
-}
-
 function nameSignal(members, nameMatch) {
   const norms = members.map((record) => record.nameNorm).filter(Boolean);
   const exact = norms.length === members.length && new Set(norms).size === 1;
@@ -335,8 +351,10 @@ function nameSignal(members, nameMatch) {
 function signalRank(signal) {
   const types = signal.types || [signal.type];
   if (types.some((type) => TIER1.has(type))) return 0;
-  if (types.includes("linkedin_url")) return 1;
-  return 2;
+  if (types.includes("zoominfo")) return 1;
+  if (types.includes("linkedin_url")) return 2;
+  if (types.includes("alias")) return 3;
+  return 4;
 }
 
 function bestNameScore(members) {
@@ -364,16 +382,6 @@ function bestNameScore(members) {
   return { score: best, left, right, pairs: pairs.slice(0, 8) };
 }
 
-function allNamesDiffer(indexes, records) {
-  const names = [];
-  for (const index of indexes) {
-    const name = records[index].nameNorm;
-    if (!name) return false;
-    names.push(name);
-  }
-  return new Set(names).size === names.length;
-}
-
 function fuzzyNameGroups(records, uncovered, onFraction) {
   const blocks = new Map();
   const addBlock = (key, index) => {
@@ -390,7 +398,6 @@ function fuzzyNameGroups(records, uncovered, onFraction) {
   }
 
   const pairwise = new Map();
-  const neighbors = new Map();
   let skippedBlocks = 0;
   const entries = [...blocks.entries()];
   entries.forEach(([, members], blockIndex) => {
@@ -408,95 +415,57 @@ function fuzzyNameGroups(records, uncovered, onFraction) {
         const pairKey = a < b ? `${a}|${b}` : `${b}|${a}`;
         if (pairwise.has(pairKey)) continue;
         const score = computeScore(records[a].nameNorm, records[b].nameNorm);
-        if (score >= FUZZY_MIN) {
-          pairwise.set(pairKey, score);
-          addNeighbor(neighbors, a, b);
-          addNeighbor(neighbors, b, a);
-        }
+        if (score >= FUZZY_MIN) pairwise.set(pairKey, score);
       }
     }
   });
   if (onFraction) onFraction(1);
 
   const groups = [];
-  const visited = new Set();
-  for (const start of neighbors.keys()) {
-    if (visited.has(start)) continue;
-    const cluster = [];
-    const queue = [start];
-    while (queue.length && cluster.length < MAX_CLUSTER) {
-      const current = queue.shift();
-      if (visited.has(current)) continue;
-      visited.add(current);
-      cluster.push(current);
-      for (const next of neighbors.get(current) || []) {
-        if (!visited.has(next)) queue.push(next);
-      }
+  const exact = new Map();
+  for (const index of uncovered) {
+    const norm = records[index].nameNorm;
+    if (!norm || norm.length < MIN_NAME) continue;
+    const list = exact.get(norm);
+    if (list) list.push(index);
+    else exact.set(norm, [index]);
+  }
+  const inExact = new Set();
+  for (const indexes of exact.values()) {
+    const unique = [...new Set(indexes)];
+    if (unique.length < 2) continue;
+    for (let start = 0; start < unique.length; start += MAX_CLUSTER) {
+      const slice = unique.slice(start, start + MAX_CLUSTER);
+      if (slice.length < 2) continue;
+      slice.forEach((index) => inExact.add(index));
+      const members = slice.map((index) => records[index]);
+      groups.push(finalize(members, [nameSignal(members, bestNameScore(members))]));
     }
-    while (queue.length) visited.add(queue.shift());
-    if (cluster.length < 2) continue;
-    let best = 0;
-    for (let i = 0; i < cluster.length; i++) {
-      for (let j = i + 1; j < cluster.length; j++) {
-        const a = cluster[i];
-        const b = cluster[j];
-        const pairKey = a < b ? `${a}|${b}` : `${b}|${a}`;
-        if (pairwise.has(pairKey)) best = Math.max(best, pairwise.get(pairKey));
-      }
-    }
-    if (best < FUZZY_MIN) continue;
-    const members = cluster.map((index) => records[index]);
-    const suggestion = suggestSurvivor(members);
-    const pairs = [];
-    for (let i = 0; i < cluster.length; i++) {
-      for (let j = i + 1; j < cluster.length; j++) {
-        const a = cluster[i];
-        const b = cluster[j];
-        const pairKey = a < b ? `${a}|${b}` : `${b}|${a}`;
-        if (!pairwise.has(pairKey)) continue;
-        pairs.push({
-          leftKey: records[a].key,
-          rightKey: records[b].key,
-          score: Math.round(pairwise.get(pairKey)),
-        });
-      }
-    }
-    pairs.sort((a, b) => b.score - a.score || a.leftKey.localeCompare(b.leftKey));
-    let left = null;
-    let right = null;
-    if (pairs.length) {
-      left = members.find((record) => record.key === pairs[0].leftKey) || null;
-      right = members.find((record) => record.key === pairs[0].rightKey) || null;
-    }
-    const signal = nameSignal(members, { score: best, left, right, pairs: pairs.slice(0, 8) });
-    const score = scoreTypes(["name"], [], best, members.length);
-    groups.push({
-      memberKeys: suggestion.ordered.map((record) => record.key),
-      matchTypes: ["name"],
+  }
+  for (const [pairKey, score] of pairwise) {
+    const [a, b] = pairKey.split("|").map(Number);
+    if (inExact.has(a) && inExact.has(b) && records[a].nameNorm === records[b].nameNorm) continue;
+    const members = [records[a], records[b]];
+    const signal = nameSignal(members, {
       score,
-      tier: tierFor(["name"], best),
-      signals: [signal],
-      explanations: [signal.text],
-      survivorKey: suggestion.survivor.key,
-      survivorReasons: suggestion.reasons,
-      countriesDiffer: suggestion.countriesDiffer,
-      countries: suggestion.countries,
-      hierarchy: suggestion.hierarchy,
+      left: records[a],
+      right: records[b],
+      pairs: [{ leftKey: records[a].key, rightKey: records[b].key, score: Math.round(score) }],
     });
+    groups.push(finalize(members, [signal]));
   }
   return { groups, skippedBlocks };
 }
 
-function addNeighbor(neighbors, from, to) {
-  const list = neighbors.get(from);
-  if (list) list.add(to);
-  else neighbors.set(from, new Set([to]));
-}
-
-function tierFor(types, nameScore = 0) {
-  if (types.some((type) => TIER1.has(type))) return 1;
-  if (types.includes("linkedin_url")) return 2;
+function tierFor(types, nameScore = 0, facts = { distinct: 0, same: false }) {
+  const distinct = facts.distinct ?? 0;
+  const strong = types.some((type) => TIER1.has(type));
+  if (distinct > MAX_DISTINCT_NAMES) return strong || types.includes("zoominfo") ? 2 : 3;
+  if (strong) return 1;
+  if (types.includes("zoominfo") && facts.same) return 1;
+  if (types.includes("zoominfo") || types.includes("linkedin_url")) return 2;
   if (types.includes("name") && nameScore >= 95) return 2;
+  if (types.includes("alias") && facts.same) return 2;
   return 3;
 }
 
@@ -531,8 +500,8 @@ function suggestSurvivor(members) {
   const survivor = ordered[0];
   const flags = survivor.flags;
   const reasons = [];
-  if (flags.ultimate) reasons.push("It is the ultimate parent of another account in this group.");
-  else if (flags.direct) reasons.push("It is the parent of another account in this group.");
+  if (flags.ultimate) reasons.push("It is the ultimate parent of another account in this group. The parent link is not a match.");
+  else if (flags.direct) reasons.push("It is the parent of another account in this group. The parent link is not a match.");
   else if (flags.nameParent) reasons.push("Its name looks like the parent of a regional or holding account in this group.");
 
   const stage = stageRank(survivor);

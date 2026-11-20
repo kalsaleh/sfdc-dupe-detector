@@ -151,8 +151,8 @@ test("groups exact keys, keeps country out of matching, and suggests the parent"
   assert.deepEqual(ids(acme), ["001000000000001", "001000000000002"]);
   assert.equal(acme.survivorKey, "001000000000001");
   assert.ok(acme.matchTypes.includes("website"));
-  assert.ok(acme.matchTypes.includes("domain"));
   assert.ok(acme.matchTypes.includes("zoominfo"));
+  assert.equal(acme.matchTypes.includes("alias"), false);
   assert.equal(sfKey("001000000000001AAA"), sfKey("001000000000001"));
 
   const umbrella = groups.find((group) => ids(group).includes("001000000000010"));
@@ -173,7 +173,7 @@ test("groups exact keys, keeps country out of matching, and suggests the parent"
   assert.equal(northwind.signals[0].type, "name");
   assert.equal(northwind.survivorKey, "001000000000050");
   assert.equal(acme.tier, 1);
-  assert.ok(acme.signals.some((signal) => signal.value === "acme.com" && signal.types.includes("domain")));
+  assert.ok(acme.signals.some((signal) => signal.value === "acme.com" && signal.types.includes("website")));
   assert.equal(umbrella.tier, 1);
   assert.ok(umbrella.signals.some((signal) => signal.types.includes("linkedin_id") && signal.value === "12345"));
 
@@ -269,6 +269,88 @@ test("brand tokens do not create a tier 1 group, and exact identifiers still do"
   assert.equal(slug.signals.some((signal) => signal.types.includes("linkedin_id")), false);
 
   const zoom = groups.find((group) => withIds(group).includes("Z-1"));
-  assert.equal(zoom.tier, 1);
+  assert.notEqual(zoom.tier, 1);
   assert.ok(zoom.signals.some((signal) => signal.value === "ZI-ORANGE"));
+});
+
+test("shared ZoomInfo, domain aliases, and ultimate parent do not make a tier 1 clique", () => {
+  const headers = [
+    "Salesforce account ID",
+    "Account name",
+    "Website",
+    "Domain",
+    "Domain (text field)",
+    "Domain aliases (Harmonic)",
+    "LinkedIn company URL",
+    "LinkedIn company ID (parsed from URL)",
+    "ZoomInfo company ID",
+    "Ultimate parent Salesforce ID",
+  ];
+  const rows = [
+    ["O-1", "Orange", "https://www.orange.com", "orange.com", "orange.com extra.test", "orange.info, wanadoo.fr", "", "", "90572188", "UP-1"],
+    ["O-2", "Orange", "https://orange.com/fr", "orange.com", "", "orange.info", "", "", "90572188", "UP-1"],
+    ["IH", "Association Region Nord DES Auditeurs Institut DES Hautes Etudes Defense Nationale (Ihedn)", "", "ihedn.fr", "", "orange.info, defense.gouv.fr", "", "", "90572188", "UP-1"],
+    ["NV", "NAVMAR Maritime Expertise and Consulting", "", "navmar.com", "", "orange.info", "", "", "90572188", "UP-1"],
+    ["S-1", "Siemens", "https://siemens.com", "siemens.com", "", "siemens.io", "", "", "ZI-SIE", "UP-S"],
+    ["S-2", "Siemens Energy", "https://siemens-energy.com", "siemens-energy.com", "", "siemens.io", "", "", "ZI-SIE", "UP-S"],
+    ["S-3", "Siemens Healthineers", "https://siemens-healthineers.com", "siemens-healthineers.com", "", "siemens.io", "", "", "ZI-SIE", "UP-S"],
+    ["S-4", "Atos", "https://atos.net", "atos.net", "", "atos.net", "", "", "ZI-SIE", "UP-S"],
+    ["S-5", "Bertelsmann", "https://bertelsmann.com", "bertelsmann.com", "", "bertelsmann.de", "", "", "ZI-SIE", "UP-S"],
+    ["S-6", "Roboyo", "https://roboyo.global", "roboyo.global", "", "roboyo.global", "", "", "ZI-SIE", "UP-S"],
+    ["A-1", "Only Alias One", "", "one.example", "", "shared-alias.example", "", "", "", ""],
+    ["A-2", "Only Alias Two", "", "two.example", "", "shared-alias.example", "", "", "", ""],
+    ["D-1", "Primary Domain One", "", "shared-primary.example", "", "", "", "", "", ""],
+    ["D-2", "Primary Domain Two", "", "shared-primary.example", "", "", "", "", "", ""],
+    ["L-1", "List Owner", "", "list-owner.example, borrowed.example", "", "", "", "", "", ""],
+    ["L-2", "List Borrower", "", "borrowed.example", "", "", "", "", "", ""],
+    ["Z-A", "Zoom Only A", "", "", "", "", "", "", "ZI-ONLY", ""],
+    ["Z-B", "Zoom Only B", "", "", "", "", "", "", "ZI-ONLY", ""],
+    ["U-1", "Parent Child One", "", "", "", "", "", "", "", "UP-ONLY"],
+    ["U-2", "Parent Child Two", "", "", "", "", "", "", "", "UP-ONLY"],
+    ["W-1", "Wide One", "https://portal.example", "portal.example", "", "", "", "", "", ""],
+    ["W-2", "Wide Two", "https://portal.example", "portal.example", "", "", "", "", "", ""],
+    ["W-3", "Wide Three", "https://portal.example", "portal.example", "", "", "", "", "", ""],
+    ["W-4", "Wide Four", "https://portal.example", "portal.example", "", "", "", "", "", ""],
+    ["T-1", "Transitive Left", "", "", "", "", "", "", "ZI-TRANS", ""],
+    ["T-2", "Transitive Middle", "", "middle.example", "", "bridge.example", "", "", "ZI-TRANS", ""],
+    ["T-3", "Transitive Right", "", "right.example", "", "bridge.example", "", "", "", ""],
+  ];
+  const { mapping } = suggestMapping(headers);
+  const records = buildRecords(headers, rows, mapping);
+  const { groups } = findDuplicateGroups(records);
+  const ids = (group) => group.memberKeys.map((key) => records.find((record) => record.key === key).id);
+  const tier1 = groups.filter((group) => group.tier === 1);
+  const together = (tier, a, b) => groups.some((group) => group.tier === tier && ids(group).includes(a) && ids(group).includes(b));
+
+  const orange = tier1.find((group) => ids(group).includes("O-1"));
+  assert.ok(orange);
+  assert.deepEqual(ids(orange).sort(), ["O-1", "O-2"]);
+  assert.equal(ids(orange).includes("IH"), false);
+  assert.equal(ids(orange).includes("NV"), false);
+  assert.ok(orange.signals.some((signal) => signal.value === "orange.com" && signal.label === "Same primary website"));
+  assert.equal(orange.signals.some((signal) => signal.label === "Same domain alias"), false);
+
+  assert.equal(tier1.some((group) => ids(group).includes("IH") || ids(group).includes("NV")), false);
+  assert.equal(tier1.some((group) => ["S-1", "S-2", "S-3", "S-4", "S-5", "S-6"].filter((id) => ids(group).includes(id)).length > 1), false);
+  assert.equal(together(1, "A-1", "A-2"), false);
+  assert.equal(together(1, "Z-A", "Z-B"), false);
+  assert.equal(together(1, "U-1", "U-2"), false);
+  assert.equal(groups.some((group) => ids(group).includes("U-1") && ids(group).includes("U-2")), false);
+  assert.equal(together(1, "T-1", "T-3"), false);
+  assert.equal(groups.some((group) => ids(group).includes("T-1") && ids(group).includes("T-3")), false);
+  assert.equal(tier1.some((group) => ids(group).includes("W-1") && ids(group).length > 3), false);
+  assert.equal(tier1.some((group) => ["W-1", "W-2", "W-3", "W-4"].every((id) => ids(group).includes(id))), false);
+
+  const primary = tier1.find((group) => ids(group).includes("D-1"));
+  assert.ok(primary);
+  assert.ok(ids(primary).includes("D-2"));
+  assert.ok(primary.signals.some((signal) => signal.value === "shared-primary.example" && signal.label === "Same primary domain"));
+
+  const borrower = groups.find((group) => ids(group).includes("L-1") && ids(group).includes("L-2"));
+  if (borrower) assert.notEqual(borrower.tier, 1);
+
+  for (const group of tier1) {
+    const names = new Set(ids(group).map((id) => records.find((record) => record.id === id).nameNorm));
+    assert.ok(names.size <= 3);
+  }
 });

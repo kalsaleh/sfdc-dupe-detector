@@ -60,8 +60,8 @@ export function buildRecords(headers, rows, mapping) {
       rowNumber: index + 2,
       id: firstValue(row, idCols),
       name: firstValue(row, nameCols),
-      websites: collectHosts(row, websiteCols, websiteLabels),
-      domains: collectHosts(row, domainCols, domainLabels),
+      websites: collectHosts(row, websiteCols, websiteLabels, "website"),
+      domains: collectHosts(row, domainCols, domainLabels, "domain"),
       linkedinUrls: collectLinkedin(row, linkedinUrlCols, linkedinUrlLabels),
       linkedinIds: collectLinkedin(row, linkedinIdCols, linkedinIdLabels),
       zoominfoIds: collectIds(row, zoomCols, zoomLabels),
@@ -103,8 +103,8 @@ export function toPublic(record) {
   if (record.synthetic) push("Row", String(record.rowNumber));
   else push("Salesforce account ID", record.id);
   push("Account name", record.name);
-  push("Website", record.websites.map((item) => item.raw).join(", "));
-  push("Domain", record.domains.map((item) => item.raw).join(", "));
+  push("Website", orderedHosts(record.websites));
+  push("Domain", orderedHosts(record.domains));
   push("LinkedIn company URL", record.linkedinUrls.map((item) => item.raw).join(", "));
   push("LinkedIn company ID", record.linkedinIds.map((item) => item.raw).join(", "));
   push("ZoomInfo company ID", record.zoominfoIds.map((item) => item.raw).join(", "));
@@ -127,6 +127,10 @@ export function toPublic(record) {
   };
 }
 
+function orderedHosts(items) {
+  return [...items].sort((a, b) => Number(b.primary) - Number(a.primary)).map((item) => item.raw).join(", ");
+}
+
 function firstValue(row, columns) {
   for (const index of columns) {
     const value = cleanText(row[index]);
@@ -135,15 +139,27 @@ function firstValue(row, columns) {
   return "";
 }
 
-function collectHosts(row, columns, labels) {
+function isAliasColumn(label) {
+  const text = String(label || "").toLowerCase();
+  return /alias|harmonic|\blist\b|text field/.test(text);
+}
+
+function collectHosts(row, columns, labels, kind) {
   const found = [];
   const seen = new Set();
+  let primaryAssigned = false;
   columns.forEach((index, position) => {
+    const source = labels[position] || (kind === "website" ? "Website" : "Domain");
+    const aliasColumn = kind === "domain" && isAliasColumn(source);
+    let firstValid = true;
     for (const part of splitList(row[index])) {
       const host = normalizeHost(part);
       if (!host || seen.has(host)) continue;
+      const primary = !aliasColumn && !primaryAssigned && firstValid;
+      if (primary) primaryAssigned = true;
+      firstValid = false;
       seen.add(host);
-      found.push({ raw: part, host, source: labels[position] || "Domain" });
+      found.push({ raw: part, host, source, primary });
     }
   });
   return found;

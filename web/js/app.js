@@ -10,6 +10,7 @@ const MATCH_LABELS = {
   linkedin_url: "LinkedIn URL",
   linkedin_id: "LinkedIn ID",
   zoominfo: "ZoomInfo",
+  alias: "Domain alias",
 };
 
 const state = {
@@ -370,7 +371,7 @@ function mappingHtml() {
       <h2 class="section-title">Record identity</h2>
       ${roleBlock("identity")}
       <h2 class="section-title">Match on these columns</h2>
-      <p class="hint">Tier 1 is only an exact normalized website, domain, LinkedIn company ID, or ZoomInfo company ID. A similar name is never tier 1 by itself. LinkedIn company URL is exact, and a numeric company ID in that URL counts as the LinkedIn company ID.</p>
+      <p class="hint">Tier 1 is a shared primary website, primary domain, or LinkedIn company ID, with at most three different normalized names. A ZoomInfo company ID is tier 1 only when the normalized names match or one of those keys agrees too. Domain aliases, a ZoomInfo ID alone, a fuzzy name, and an ultimate parent are not tier 1.</p>
       ${roleBlock("match")}
       <h2 class="section-title">Survivor suggestion only</h2>
       <p class="hint">Parent, country, stage, and ARR never create a match. They only suggest which record should survive.</p>
@@ -526,7 +527,7 @@ function reviewHtml() {
         </div>
       </div>
       <p class="stats">${state.groups.length.toLocaleString()} groups from ${state.accountCount.toLocaleString()} accounts (${state.rowCount.toLocaleString()} rows). ${dismissedCount.toLocaleString()} dismissed in this browser.</p>
-      <p class="hint">Tier 1 means the same website, domain, LinkedIn company ID, or ZoomInfo company ID. Each row shows that shared value, then the account name and ID. A fuzzy name never makes tier 1.</p>
+      <p class="hint">Tier 1 means every account shares a primary website, a primary domain, or a LinkedIn company ID, and at most three normalized names differ. A ZoomInfo ID alone, a domain alias, a fuzzy name, or an ultimate parent is not tier 1. Each row shows the shared value, then the account name and ID.</p>
       ${state.warnings.map((warning) => `<p class="note" style="margin-bottom:0.5rem">${escapeHtml(warning)}</p>`).join("")}
       ${state.mapping.accountId && state.mapping.accountId.length ? "" : `<p class="note" style="margin-bottom:0.5rem">No account ID column is selected, so a dismissal is tied to the row number in this file.</p>`}
       <div class="toolbar">
@@ -668,8 +669,8 @@ function pairingHtml(group) {
   }).join("");
   const fallback = blocks ? "" : (group.explanations || []).map((line) => `<li>${escapeHtml(line)}</li>`).join("");
   const tierNote = group.tier === 1
-    ? "Tier 1 because these accounts share an exact normalized website, domain, LinkedIn company ID, or ZoomInfo company ID."
-    : "This is not tier 1. Tier 1 requires the same normalized website, domain, LinkedIn company ID, or ZoomInfo company ID. A shared or similar name does not qualify.";
+    ? "Tier 1 because every account shares a primary website, a primary domain, or a LinkedIn company ID, or the same ZoomInfo company ID and the same normalized name. At most three normalized names differ."
+    : "This is not tier 1. A ZoomInfo company ID on its own, a domain alias, a fuzzy name, or an ultimate parent does not qualify. More than three different normalized names does not qualify.";
   return `
     <div class="pair-box">
       <h3>Why these rows were paired</h3>
