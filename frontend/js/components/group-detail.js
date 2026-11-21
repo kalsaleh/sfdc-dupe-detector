@@ -56,7 +56,7 @@ function buildDetailHTML(preview, neighbors) {
     const isParentChild = action === 'set_parent';
     const pairwise = preview.pairwise_scores || [];
 
-    const actionLabel = isParentChild ? 'Parent-Child' : 'Merge';
+    const actionLabel = 'Review only';
     const actionColor = isParentChild ? 'blue' : 'alarmalade';
     const roleLabel = isParentChild ? 'parent' : 'master';
 
@@ -192,10 +192,7 @@ function buildDetailHTML(preview, neighbors) {
     let warnings = '';
     if (hasARR) warnings += '<div class="text-amber-800 bg-amber-50 p-3 rounded-lg text-sm mb-2 border border-amber-200">One or more accounts have ARR values. Review carefully.</div>';
     if (diffOwners) warnings += '<div class="text-amber-800 bg-amber-50 p-3 rounded-lg text-sm mb-2 border border-amber-200">Accounts have different owners.</div>';
-    if (diffCountries) warnings += '<div class="text-blue-800 bg-blue-50 p-3 rounded-lg text-sm mb-2 border border-blue-200">Accounts are in different countries &mdash; consider parent-child instead of merge.</div>';
-
-    const mergeBtn = `<button id="btn-merge" class="px-6 py-2.5 rounded-lg font-medium text-sm transition-colors ${!isParentChild ? 'bg-alarmalade-500 hover:bg-alarmalade-600 text-white' : 'bg-white border border-alarmalade-500 text-alarmalade-600 hover:bg-alarmalade-50'}">Merge${!isParentChild ? ' (recommended)' : ''}</button>`;
-    const parentBtn = `<button id="btn-set-parent" class="px-6 py-2.5 rounded-lg font-medium text-sm transition-colors ${isParentChild ? 'bg-blue-600 hover:bg-blue-700 text-white' : 'bg-white border border-blue-600 text-blue-600 hover:bg-blue-50'}">Set as Parent${isParentChild ? ' (recommended)' : ''}</button>`;
+    if (diffCountries) warnings += '<div class="text-blue-800 bg-blue-50 p-3 rounded-lg text-sm mb-2 border border-blue-200">Accounts are in different countries. This screen cannot update Salesforce.</div>';
 
     return `
         <div class="fade-in">
@@ -262,8 +259,6 @@ function buildDetailHTML(preview, neighbors) {
                     ${showCheckboxes ? '<div id="selection-warning" class="text-xs text-amber-600 mt-1 hidden"></div>' : ''}
                 </div>
                 <div class="flex gap-3">
-                    ${mergeBtn}
-                    ${parentBtn}
                     <button id="btn-dismiss" class="px-6 py-2.5 bg-sand text-slate-700 rounded-lg hover:bg-sand-dark font-medium text-sm border border-sand-dark transition-colors">
                         Not a Duplicate
                     </button>
@@ -275,8 +270,6 @@ function buildDetailHTML(preview, neighbors) {
 
             <!-- Keyboard shortcut legend -->
             <div id="shortcut-bar" class="fixed bottom-0 left-0 right-0 bg-charcoal text-slate-400 text-xs py-2.5 px-4 flex items-center justify-center gap-6 z-40">
-                <span><kbd class="px-1.5 py-0.5 bg-slate-700 rounded text-white font-mono text-xs">M</kbd> Merge</span>
-                <span><kbd class="px-1.5 py-0.5 bg-slate-700 rounded text-white font-mono text-xs">P</kbd> Set Parent</span>
                 <span><kbd class="px-1.5 py-0.5 bg-slate-700 rounded text-white font-mono text-xs">D</kbd> Dismiss</span>
                 <span class="border-l border-slate-600 pl-6"><kbd class="px-1.5 py-0.5 bg-slate-700 rounded text-white font-mono text-xs">&larr;</kbd> Prev</span>
                 <span><kbd class="px-1.5 py-0.5 bg-slate-700 rounded text-white font-mono text-xs">&rarr;</kbd> Next</span>
@@ -332,29 +325,6 @@ function wireDetailActions(preview, neighbors, filters) {
         });
     });
 
-    const mergeBtn = document.getElementById('btn-merge');
-    const parentBtn = document.getElementById('btn-set-parent');
-
-    if (mergeBtn) {
-        mergeBtn.addEventListener('click', () => {
-            const selected = document.querySelector('input[name="master"]:checked');
-            if (!selected) return alert('Select a primary account first');
-            const sel = _validateSelection(preview);
-            if (!sel) return;
-            showMergeConfirm(preview.group_id, sel.masterId, preview.accounts, 'merge', onComplete, sel.victimIds);
-        });
-    }
-
-    if (parentBtn) {
-        parentBtn.addEventListener('click', () => {
-            const selected = document.querySelector('input[name="master"]:checked');
-            if (!selected) return alert('Select a primary account first');
-            const sel = _validateSelection(preview);
-            if (!sel) return;
-            showMergeConfirm(preview.group_id, sel.masterId, preview.accounts, 'set_parent', onComplete, sel.victimIds);
-        });
-    }
-
     document.getElementById('btn-dismiss').addEventListener('click', async () => {
         if (!confirm('Mark this group as not a duplicate?')) return;
         try {
@@ -386,8 +356,6 @@ function wireKeyboardShortcuts(preview, neighbors, filters) {
         if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
 
         switch (e.key) {
-            case 'm': case 'M': { const btn = document.getElementById('btn-merge'); if (btn) btn.click(); break; }
-            case 'p': case 'P': { const btn = document.getElementById('btn-set-parent'); if (btn) btn.click(); break; }
             case 'd': case 'D': { const btn = document.getElementById('btn-dismiss'); if (btn) btn.click(); break; }
             case 'ArrowLeft': case 'k': case 'K':
                 if (neighbors.prev_group_id) navigate('group-detail', { groupId: neighbors.prev_group_id, filters });
