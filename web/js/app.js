@@ -1,8 +1,21 @@
-import { parseCsv, sampleValues } from "./csv.js";
-import { familiarity, MATCH_ROLE_IDS, ROLES, suggestMapping } from "./headers.js";
+import { BUILD } from "./build.js?v=20261121a";
+import { parseCsv, sampleValues } from "./csv.js?v=20261121a";
+import { familiarity, MATCH_ROLE_IDS, ROLES, suggestMapping } from "./headers.js?v=20261121a";
 
 const STORAGE_KEY = "sfdc-dupe-review-dismissed-v1";
-const PAGE_SIZE = 40;
+const PAGE_SIZE = 20;
+const KEY_FIELDS = [
+  ["name", "Name"],
+  ["website", "Website"],
+  ["domain", "Domain"],
+  ["linkedin", "LinkedIn"],
+  ["zoominfo", "ZoomInfo"],
+  ["country", "Country"],
+  ["owner", "Owner"],
+  ["stage", "Stage"],
+  ["arr", "ARR"],
+  ["created", "Created"],
+];
 const MATCH_LABELS = {
   name: "Name",
   website: "Website",
@@ -36,6 +49,7 @@ const state = {
   showDismissed: false,
   page: 0,
   selectedId: null,
+  build: "",
   dismissed: new Set(Object.keys(readStore())),
 };
 
@@ -68,7 +82,16 @@ function render() {
   else if (state.screen === "mapping") app.innerHTML = mappingHtml();
   else if (state.screen === "progress") app.innerHTML = progressHtml();
   else app.innerHTML = reviewHtml();
+  paintBuild();
   bind();
+}
+
+function paintBuild() {
+  const label = document.querySelector("#build-label");
+  if (!label) return;
+  label.textContent = state.build && state.build !== BUILD
+    ? `Running ${state.build}. This page is ${BUILD}. Hard-refresh.`
+    : `Build ${BUILD}`;
 }
 
 function bind() {
@@ -145,14 +168,13 @@ function bind() {
       }
     });
   }
-  const tier = document.querySelector("#tier");
-  if (tier) {
-    tier.addEventListener("change", () => {
-      state.tier = tier.value;
+  document.querySelectorAll("[data-tier-filter]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.tier = button.getAttribute("data-tier-filter");
       state.page = 0;
       render();
     });
-  }
+  });
   const type = document.querySelector("#type-filter");
   if (type) {
     type.addEventListener("change", () => {
@@ -284,7 +306,7 @@ function startMatch() {
   state.pct = 1;
   state.error = "";
   render();
-  worker = new Worker(new URL("./worker.js", import.meta.url), { type: "module" });
+  worker = new Worker(new URL(`./worker.js?v=${BUILD}`, import.meta.url), { type: "module" });
   worker.onmessage = (event) => {
     const message = event.data;
     if (message.type === "progress") {
@@ -307,10 +329,11 @@ function startMatch() {
     state.warnings = message.warnings || [];
     state.accountCount = message.accountCount || 0;
     state.rowCount = message.rowCount || 0;
+    state.build = message.build || "";
     state.page = 0;
     state.selectedId = null;
     state.query = "";
-    state.tier = "all";
+    state.tier = "1";
     state.typeFilter = "all";
     state.screen = "review";
     render();
@@ -371,7 +394,7 @@ function mappingHtml() {
       <h2 class="section-title">Record identity</h2>
       ${roleBlock("identity")}
       <h2 class="section-title">Match on these columns</h2>
-      <p class="hint">Tier 1 is a shared primary website, primary domain, or LinkedIn company ID, with at most three different normalized names. A ZoomInfo company ID is tier 1 only when the normalized names match or one of those keys agrees too. Domain aliases, a ZoomInfo ID alone, a fuzzy name, and an ultimate parent are not tier 1.</p>
+      <p class="hint">Tier 1 needs an exact primary website, primary domain, or LinkedIn company ID, and the normalized names have to agree on every pair. A ZoomInfo ID, a domain alias, a parent, or a fuzzy name never makes tier 1.</p>
       ${roleBlock("match")}
       <h2 class="section-title">Survivor suggestion only</h2>
       <p class="hint">Parent, country, stage, and ARR never create a match. They only suggest which record should survive.</p>
@@ -507,6 +530,16 @@ function progressHtml() {
   `;
 }
 
+function tierCounts() {
+  const rows = state.groups.filter((group) => state.showDismissed || !state.dismissed.has(signature(group)));
+  return {
+    all: rows.length,
+    1: rows.filter((group) => group.tier === 1).length,
+    2: rows.filter((group) => group.tier === 2).length,
+    3: rows.filter((group) => group.tier === 3).length,
+  };
+}
+
 function reviewHtml() {
   const visible = visibleGroups();
   const pages = Math.max(1, Math.ceil(visible.length / PAGE_SIZE));
@@ -516,6 +549,13 @@ function reviewHtml() {
   const selected = state.groups.find((group) => group.id === state.selectedId) || null;
   const dismissedCount = state.groups.filter((group) => state.dismissed.has(signature(group))).length;
   const types = [...new Set(state.groups.flatMap((group) => group.matchTypes))];
+  const counts = tierCounts();
+  const filters = [
+    ["1", "Tier 1", "Website, domain, or LinkedIn ID, and the names agree"],
+    ["2", "Tier 2", "Shared value, but the names do not agree"],
+    ["3", "Tier 3", "Name only"],
+    ["all", "All", "Every group"],
+  ];
   return `
     <section>
       <div class="actions" style="justify-content:space-between">
@@ -526,15 +566,20 @@ function reviewHtml() {
           <button class="ghost" id="another" type="button">New file</button>
         </div>
       </div>
-      <p class="stats">${state.groups.length.toLocaleString()} groups from ${state.accountCount.toLocaleString()} accounts (${state.rowCount.toLocaleString()} rows). ${dismissedCount.toLocaleString()} dismissed in this browser.</p>
-      <p class="hint">Tier 1 means every account shares a primary website, a primary domain, or a LinkedIn company ID, and at most three normalized names differ. A ZoomInfo ID alone, a domain alias, a fuzzy name, or an ultimate parent is not tier 1. Each row shows the shared value, then the account name and ID.</p>
+      <div class="summary-bar" role="group" aria-label="Filter by tier">
+        ${filters.map(([tier, label, note]) => `
+          <button type="button" class="summary-stat ${state.tier === tier ? "is-on" : ""}" data-tier-filter="${tier}" aria-pressed="${state.tier === tier}">
+            <span class="summary-count">${counts[tier].toLocaleString()}</span>
+            <span class="summary-label">${label}</span>
+            <span class="hint">${note}</span>
+          </button>
+        `).join("")}
+      </div>
+      <p class="stats">${state.accountCount.toLocaleString()} accounts from ${state.rowCount.toLocaleString()} rows. ${dismissedCount.toLocaleString()} dismissed in this browser.</p>
       ${state.warnings.map((warning) => `<p class="note" style="margin-bottom:0.5rem">${escapeHtml(warning)}</p>`).join("")}
       ${state.mapping.accountId && state.mapping.accountId.length ? "" : `<p class="note" style="margin-bottom:0.5rem">No account ID column is selected, so a dismissal is tied to the row number in this file.</p>`}
       <div class="toolbar">
-        <input id="search" type="search" placeholder="Search name or ID" value="${escapeHtml(state.query)}">
-        <select id="tier" aria-label="Tier">
-          ${["all", "1", "2", "3"].map((tier) => `<option value="${tier}" ${state.tier === tier ? "selected" : ""}>${tier === "all" ? "All tiers" : `Tier ${tier}`}</option>`).join("")}
-        </select>
+        <input id="search" type="search" placeholder="Search name, ID, or shared value" value="${escapeHtml(state.query)}">
         <select id="type-filter" aria-label="Match type">
           <option value="all" ${state.typeFilter === "all" ? "selected" : ""}>All match types</option>
           ${types.map((type) => `<option value="${escapeHtml(type)}" ${state.typeFilter === type ? "selected" : ""}>${escapeHtml(MATCH_LABELS[type] || type)}</option>`).join("")}
@@ -552,7 +597,7 @@ function reviewHtml() {
             </div>
           </div>
         </div>
-        <div>${selected ? detailHtml(selected) : `<div class="detail"><p class="hint">Select a group. J and K move through the list. D dismisses the open group in this browser only.</p></div>`}</div>
+        <div>${selected ? detailHtml(selected) : `<div class="detail"><p class="hint">Select a group to compare name, website, domain, LinkedIn, ZoomInfo, country, owner, stage, ARR, and created date. J and K move through the list. D dismisses the open group in this browser only.</p></div>`}</div>
       </div>
     </section>
   `;
@@ -560,23 +605,15 @@ function reviewHtml() {
 
 function groupButton(group) {
   const dismissed = state.dismissed.has(signature(group));
-  const signals = (group.signals || []).slice(0, 3);
-  const reasons = signals.length
-    ? signals.map((signal) => `
-        <span class="reason">
-          <span>${escapeHtml(signal.label)}${signal.score && !signal.exact ? ` · ${Math.round(signal.score)}` : ""}</span>
-          ${signal.value ? `<span class="reason-value">${escapeHtml(signal.value)}</span>` : ""}
-        </span>
-      `).join("")
-    : `<span class="reason">${escapeHtml((group.explanations || [])[0] || "Match")}</span>`;
+  const reason = group.reason || (group.explanations || [])[0] || "Match";
   return `
     <button class="group-row ${dismissed ? "is-dismissed" : ""}" type="button" data-group="${group.id}" aria-current="${group.id === state.selectedId}">
       <span class="group-head">
         <span class="badge tier-${group.tier}">Tier ${group.tier}</span>
-        ${reasons}
         ${dismissed ? `<span class="badge">Dismissed</span>` : ""}
       </span>
-      ${memberLines(group, 6)}
+      <span class="reason">${escapeHtml(reason)}</span>
+      ${memberLines(group, 4)}
     </button>
   `;
 }
@@ -598,84 +635,85 @@ function detailHtml(group) {
   const members = group.memberKeys.map((key) => state.records[key]).filter(Boolean);
   const survivor = state.records[group.survivorKey];
   const dismissed = state.dismissed.has(signature(group));
+  const reason = group.reason || (group.explanations || [])[0] || "Match";
   const rows = fieldRows(members);
   const matchedLabels = matchedFieldLabels(group);
   return `
     <article class="detail">
       <div class="actions" style="justify-content:space-between">
-        <p class="hint">Group ${group.id}</p>
+        <span class="badge tier-${group.tier}">Tier ${group.tier}</span>
         <button class="ghost" id="close-detail" type="button">Close</button>
       </div>
-      <div class="chips" style="margin:0.2rem 0 0.7rem">
-        <span class="badge tier-${group.tier}">Tier ${group.tier}</span>
-        ${group.matchTypes.map((type) => `<span class="badge">${escapeHtml(MATCH_LABELS[type] || type)}</span>`).join("")}
-      </div>
-      ${pairingHtml(group)}
-      <p class="hint">Suggested survivor</p>
-      <h2>${escapeHtml(survivor?.name || "")}</h2>
-      <p class="member-id" style="margin-bottom:0.35rem">${escapeHtml(survivor?.id || "")}</p>
-      <ul class="reasons">${group.survivorReasons.map((reason) => `<li>${escapeHtml(reason)}</li>`).join("")}</ul>
-      ${group.hierarchy ? `<p class="note plain">This looks like a parent and related records. The suggestion does not change Salesforce.</p>` : ""}
+      <h2 class="reason-title">${escapeHtml(reason)}</h2>
+      <p class="hint">${group.tier === 1
+        ? "Tier 1 because this value is exact and the names agree."
+        : "This is not tier 1. A ZoomInfo ID, a domain alias, a parent, or names that do not agree cannot make tier 1."}</p>
+      ${keyTable(group, members)}
       <div class="actions" style="margin:0.8rem 0">
-        <button class="primary" id="dismiss" type="button">${dismissed ? "Restore" : "Dismiss"}</button>
+        <button class="primary" id="dismiss" type="button">${dismissed ? "Restore" : "Dismiss in this browser"}</button>
       </div>
-      <p class="hint" style="margin-bottom:0.7rem">${dismissed ? "Dismissed in this browser only." : "Dismiss hides this group on this browser. It does not update Salesforce."}</p>
-      <div class="table-scroll">
-        <table>
-          <thead>
-            <tr>
-              <th>Field</th>
-              ${members.map((member) => `<th class="${member.key === group.survivorKey ? "survivor" : ""}"><span class="col-name">${escapeHtml(member.name)}</span><span class="member-id">${escapeHtml(member.id)}</span></th>`).join("")}
-            </tr>
-          </thead>
-          <tbody>
-            ${rows.map((row) => `
-              <tr class="${matchedLabels.has(row.label) ? "matched" : ""}">
-                <th>${escapeHtml(row.label)}${matchedLabels.has(row.label) ? ` <span class="badge">shared</span>` : ""}</th>
-                ${row.values.map((value, index) => `<td class="${row.differs ? "diff" : ""} ${members[index].key === group.survivorKey ? "survivor" : ""}">${escapeHtml(value)}</td>`).join("")}
+      <p class="hint" style="margin-bottom:0.7rem">${dismissed ? "Dismissed in this browser only. Salesforce was not changed." : "Dismiss hides this group on this browser. It does not update Salesforce."}</p>
+      <p class="hint">Suggested survivor: ${escapeHtml(survivor?.name || "")} (${escapeHtml(survivor?.id || "")})</p>
+      <ul class="reasons">${group.survivorReasons.map((line) => `<li>${escapeHtml(line)}</li>`).join("")}</ul>
+      ${group.hierarchy ? `<p class="note plain">This looks like a parent and related records. The suggestion does not change Salesforce.</p>` : ""}
+      <details>
+        <summary>All fields</summary>
+        <div class="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>Field</th>
+                ${members.map((member) => `<th class="${member.key === group.survivorKey ? "survivor" : ""}"><span class="col-name">${escapeHtml(member.name)}</span><span class="member-id">${escapeHtml(member.id)}</span></th>`).join("")}
               </tr>
-            `).join("")}
-          </tbody>
-        </table>
-      </div>
+            </thead>
+            <tbody>
+              ${rows.map((row) => `
+                <tr class="${matchedLabels.has(row.label) ? "matched" : ""}">
+                  <th>${escapeHtml(row.label)}${matchedLabels.has(row.label) ? ` <span class="badge">shared</span>` : ""}</th>
+                  ${row.values.map((value, index) => `<td class="${row.differs ? "diff" : ""} ${members[index].key === group.survivorKey ? "survivor" : ""}">${escapeHtml(value)}</td>`).join("")}
+                </tr>
+              `).join("")}
+            </tbody>
+          </table>
+        </div>
+      </details>
     </article>
   `;
 }
 
-function pairingHtml(group) {
-  const signals = group.signals || [];
-  const blocks = signals.map((signal) => {
-    const keys = signal.memberKeys && signal.memberKeys.length ? signal.memberKeys : group.memberKeys;
-    const who = keys.slice(0, 6).map((key) => {
-      const record = state.records[key] || {};
-      return `${record.name || "Account"} (${record.id || ""})`;
-    });
-    const extra = keys.length > 6 ? ` +${keys.length - 6}` : "";
-    const pairs = (signal.exact ? [] : (signal.namePairs || [])).slice(0, 4).map((pair) => {
-      const left = state.records[pair.leftKey] || {};
-      const right = state.records[pair.rightKey] || {};
-      return `<li>${escapeHtml(left.name || "Account")} (${escapeHtml(left.id || "")}) paired with ${escapeHtml(right.name || "Account")} (${escapeHtml(right.id || "")}), score ${pair.score}.</li>`;
-    }).join("");
-    const via = signal.sources && signal.sources.length ? `Columns: ${signal.sources.join(", ")}` : "";
-    return `
-      <li>
-        <span class="pair-label">${escapeHtml(signal.label)}${signal.score && !signal.exact ? ` · ${Math.round(signal.score)}` : ""}</span>
-        ${signal.value ? `<span class="reason-value">${escapeHtml(signal.value)}</span>` : ""}
-        <span class="hint">${escapeHtml(who.join(" · "))}${escapeHtml(extra)}</span>
-        ${via ? `<span class="hint">${escapeHtml(via)}</span>` : ""}
-        ${pairs ? `<ul class="pair-accounts">${pairs}</ul>` : ""}
-      </li>
-    `;
-  }).join("");
-  const fallback = blocks ? "" : (group.explanations || []).map((line) => `<li>${escapeHtml(line)}</li>`).join("");
-  const tierNote = group.tier === 1
-    ? "Tier 1 because every account shares a primary website, a primary domain, or a LinkedIn company ID, or the same ZoomInfo company ID and the same normalized name. At most three normalized names differ."
-    : "This is not tier 1. A ZoomInfo company ID on its own, a domain alias, a fuzzy name, or an ultimate parent does not qualify. More than three different normalized names does not qualify.";
+function keyTable(group, members) {
+  const shared = new Set();
+  for (const signal of group.signals || []) {
+    for (const type of signal.types || [signal.type]) {
+      if (type === "website") shared.add("website");
+      if (type === "domain" || type === "alias") shared.add("domain");
+      if (type === "linkedin_id" || type === "linkedin_url") shared.add("linkedin");
+      if (type === "zoominfo") shared.add("zoominfo");
+      if (type === "name") shared.add("name");
+    }
+  }
   return `
-    <div class="pair-box">
-      <h3>Why these rows were paired</h3>
-      <ul class="pair-list">${blocks || fallback}</ul>
-      <p class="hint">${tierNote}</p>
+    <div class="table-scroll">
+      <table class="key-table">
+        <thead>
+          <tr>
+            <th>Field</th>
+            ${members.map((member) => `<th class="${member.key === group.survivorKey ? "survivor" : ""}"><span class="col-name">${escapeHtml(member.name)}</span><span class="member-id">${escapeHtml(member.id)}</span></th>`).join("")}
+          </tr>
+        </thead>
+        <tbody>
+          ${KEY_FIELDS.map(([key, label]) => {
+            const values = members.map((member) => (member.summary || {})[key] || "");
+            const differs = new Set(values.filter(Boolean)).size > 1;
+            return `
+              <tr class="${shared.has(key) ? "matched" : ""}">
+                <th>${escapeHtml(label)}${shared.has(key) ? ` <span class="badge">shared</span>` : ""}</th>
+                ${values.map((value, index) => `<td class="${differs ? "diff" : ""} ${members[index].key === group.survivorKey ? "survivor" : ""}">${escapeHtml(value)}</td>`).join("")}
+              </tr>
+            `;
+          }).join("")}
+        </tbody>
+      </table>
     </div>
   `;
 }
@@ -728,6 +766,7 @@ function visibleGroups() {
         const record = state.records[key];
         return `${record?.name || ""} ${record?.id || ""}`;
       }),
+      group.reason || "",
       ...(group.signals || []).map((signal) => `${signal.label || ""} ${signal.value || ""}`),
     ].join(" ").toLowerCase();
     return haystack.includes(query);
@@ -739,6 +778,7 @@ function emptyCopy() {
   if (!state.showDismissed && state.groups.every((group) => state.dismissed.has(signature(group)))) {
     return "Every group is dismissed in this browser. Show dismissed groups to restore one.";
   }
+  if (state.tier === "1") return "No tier 1 groups. Tier 1 needs a shared website, domain, or LinkedIn company ID and names that agree. Other pairs are in tier 2.";
   return "No groups match this filter.";
 }
 
@@ -770,7 +810,7 @@ function signature(group) {
 }
 
 function downloadCsv() {
-  const header = ["group_id", "score", "tier", "match_types", "survivor_id", "survivor_name", "reasons", "member_ids", "member_names", "explanations", "dismissed"];
+  const header = ["group_id", "score", "tier", "reason", "match_types", "survivor_id", "survivor_name", "reasons", "member_ids", "member_names", "explanations", "dismissed"];
   const lines = [header.join(",")];
   for (const group of state.groups) {
     const members = group.memberKeys.map((key) => state.records[key]).filter(Boolean);
@@ -779,6 +819,7 @@ function downloadCsv() {
       group.id,
       group.score,
       group.tier,
+      group.reason || "",
       group.matchTypes.join("|"),
       survivor?.id || "",
       survivor?.name || "",

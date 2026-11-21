@@ -6,6 +6,7 @@ const MAX_BLOCK = 500;
 const MAX_CLUSTER = 10;
 const MAX_DISTINCT_NAMES = 3;
 const FUZZY_MIN = 85;
+const NAME_AGREE = 90;
 const MIN_NAME = 3;
 
 const BASE = {
@@ -101,37 +102,10 @@ export function findDuplicateGroups(records, onProgress) {
   if (onProgress) onProgress({ phase: "Comparing websites, domains, and IDs", pct: 40 });
 
   const pending = [];
-  for (const bucket of buckets.values()) {
-    const indexes = [...new Set(bucket.indexes)];
-    if (indexes.length < 2) continue;
-    const strong = bucket.type === "website" || bucket.type === "domain" || bucket.type === "linkedin_id";
-    if (indexes.length > MAX_KEY_GROUP) {
-      skippedLarge += 1;
-      emitSameNameChunks(indexes, bucket, records, pending);
-      skippedMixed += 1;
-      continue;
-    }
-    const facts = nameFacts(indexes.map((index) => records[index]));
-    const fullClique = (strong && facts.distinct <= MAX_DISTINCT_NAMES)
-      || (bucket.type === "zoominfo" && facts.same)
-      || (bucket.type === "linkedin_url" && facts.distinct <= MAX_DISTINCT_NAMES)
-      || (bucket.type === "alias" && facts.same);
-    if (fullClique) {
-      pending.push(buildKeyGroup(indexes, bucket, records));
-      continue;
-    }
-    if (strong || bucket.type === "zoominfo" || bucket.type === "linkedin_url") {
-      emitSameNameChunks(indexes, bucket, records, pending);
-      if (bucket.type === "zoominfo" && indexes.length === 2) pending.push(buildKeyGroup(indexes, bucket, records));
-      else if (indexes.length > 2) skippedMixed += 1;
-      continue;
-    }
-    if (bucket.type === "alias" && indexes.length === 2) {
-      pending.push(buildKeyGroup(indexes, bucket, records));
-      continue;
-    }
-    if (indexes.length > 2) skippedMixed += 1;
-  }
+  const stats = { skippedLarge: 0, skippedMixed: 0 };
+  for (const bucket of buckets.values()) emitBucket(bucket, records, pending, stats);
+  skippedLarge = stats.skippedLarge;
+  skippedMixed = stats.skippedMixed;
 
   const exactGroups = mergeGroups(pending);
   const tier1Keys = new Set();
@@ -162,7 +136,7 @@ export function findDuplicateGroups(records, onProgress) {
     warnings.push(`${skippedLarge} shared values were split because more than ${MAX_KEY_GROUP} accounts used them.`);
   }
   if (skippedMixed) {
-    warnings.push(`${skippedMixed} shared ZoomInfo IDs, websites, domains, or aliases were not kept as one tier 1 group because the account names differ.`);
+    warnings.push(`${skippedMixed} shared values covered more than 6 accounts with different names, so only the same-name groups were kept.`);
   }
 
   groups.sort((a, b) => a.tier - b.tier || b.score - a.score || b.memberKeys.length - a.memberKeys.length || a.memberKeys[0].localeCompare(b.memberKeys[0]));
@@ -190,6 +164,67 @@ function emitSameNameChunks(indexes, bucket, records, pending) {
       if (chunk.length >= 2) pending.push(buildKeyGroup(chunk, bucket, records));
     }
   }
+}
+
+function emitBucket(bucket, records, pending, stats) {
+  const indexes = [...new Set(bucket.indexes)];
+  if (indexes.length < 2) return;
+  const strong = TIER1.has(bucket.type);
+  const weak = bucket.type === "zoominfo" || bucket.type === "alias" || bucket.type === "linkedin_url";
+  if (!strong && !weak) return;
+  if (indexes.length > MAX_KEY_GROUP) {
+    stats.skippedLarge += 1;
+    if (strong) emitSameNameChunks(indexes, bucket, records, pending);
+    return;
+  }
+
+  const covered = new Set();
+  if (strong) {
+    const byName = new Map();
+    for (const index of indexes) {
+      const name = records[index].nameNorm;
+      if (!name) continue;
+      const list = byName.get(name);
+      if (list) list.push(index);
+      else byName.set(name, [index]);
+    }
+    for (const slice of byName.values()) {
+      if (slice.length < 2) continue;
+      for (let start = 0; start < slice.length; start += MAX_CLUSTER) {
+        const chunk = slice.slice(start, start + MAX_CLUSTER);
+        if (chunk.length < 2) continue;
+        pending.push(buildKeyGroup(chunk, bucket, records));
+        for (let i = 0; i < chunk.length; i++) {
+          for (let j = i + 1; j < chunk.length; j++) covered.add(pairTag(chunk[i], chunk[j]));
+        }
+      }
+    }
+    for (let i = 0; i < indexes.length; i++) {
+      for (let j = i + 1; j < indexes.length; j++) {
+        const left = records[indexes[i]];
+        const right = records[indexes[j]];
+        if (!left.nameNorm || !right.nameNorm || left.nameNorm === right.nameNorm) continue;
+        if (computeScore(left.nameNorm, right.nameNorm) < NAME_AGREE) continue;
+        pending.push(buildKeyGroup([indexes[i], indexes[j]], bucket, records));
+        covered.add(pairTag(indexes[i], indexes[j]));
+      }
+    }
+  }
+
+  if (indexes.length > 6) {
+    stats.skippedMixed += 1;
+    return;
+  }
+  for (let i = 0; i < indexes.length; i++) {
+    for (let j = i + 1; j < indexes.length; j++) {
+      if (covered.has(pairTag(indexes[i], indexes[j]))) continue;
+      pending.push(buildKeyGroup([indexes[i], indexes[j]], bucket, records));
+    }
+  }
+}
+
+function pairTag(left, right) {
+  return left < right ? `${left}:${right}` : `${right}:${left}`;
 }
 
 function buildKeyGroup(indexes, bucket, records) {
@@ -237,6 +272,7 @@ function finalize(members, signals) {
     signals,
     nameDistinct: facts.distinct,
     nameSame: facts.same,
+    nameCount: members.length,
     score: 0,
     survivorKey: suggestion.survivor.key,
     survivorReasons: suggestion.reasons,
@@ -259,9 +295,44 @@ function refresh(group) {
   }
   group.matchTypes = TYPE_ORDER.filter((type) => types.includes(type));
   const nameScore = group.signals.find((signal) => signal.type === "name")?.score || 0;
-  group.tier = tierFor(group.matchTypes, nameScore, { distinct: group.nameDistinct, same: group.nameSame });
+  group.tier = tierFor(group.matchTypes, nameScore, {
+    distinct: group.nameDistinct,
+    same: group.nameSame,
+    members: group.nameCount || group.memberKeys.length,
+  });
   group.signals.sort((a, b) => signalRank(a) - signalRank(b) || a.label.localeCompare(b.label));
-  group.explanations = group.signals.map((signal) => signal.text);
+  group.reason = plainReason(group, nameScore);
+  const lines = group.signals.map((signal) => signal.text);
+  group.explanations = [group.reason, ...lines.filter((line) => line !== group.reason)];
+}
+
+function plainReason(group, nameScore) {
+  const keys = group.signals.filter((signal) => signal.type !== "name" && signal.value);
+  const strong = keys.filter((signal) => (signal.types || [signal.type]).some((type) => TIER1.has(type)));
+  const shown = (strong.length ? strong : keys).slice(0, 2);
+  const nameBit = group.nameSame
+    ? "same name"
+    : nameScore >= NAME_AGREE
+      ? `similar name (${Math.round(nameScore)})`
+      : "names do not match";
+  if (!shown.length) {
+    const name = group.signals.find((signal) => signal.type === "name");
+    return name ? name.text.replace(/\.$/, "") : "Matched account names";
+  }
+  const phrases = shown.map((signal) => `${nounFor(signal.type)} ${signal.value}`);
+  const joined = phrases.length === 1 ? phrases[0] : `${phrases[0]} and ${phrases[1]}`;
+  if (group.tier === 1) return `Same ${joined} and ${nameBit}`;
+  return `Same ${joined}; ${nameBit}`;
+}
+
+function nounFor(type) {
+  if (type === "website") return "website";
+  if (type === "domain") return "domain";
+  if (type === "linkedin_id") return "LinkedIn company ID";
+  if (type === "linkedin_url") return "LinkedIn URL";
+  if (type === "zoominfo") return "ZoomInfo ID";
+  if (type === "alias") return "domain alias";
+  return TYPE_LABEL[type] || type;
 }
 
 function mergeGroups(list) {
@@ -457,15 +528,12 @@ function fuzzyNameGroups(records, uncovered, onFraction) {
   return { groups, skippedBlocks };
 }
 
-function tierFor(types, nameScore = 0, facts = { distinct: 0, same: false }) {
-  const distinct = facts.distinct ?? 0;
+function tierFor(types, nameScore = 0, facts = { distinct: 0, same: false, members: 0 }) {
   const strong = types.some((type) => TIER1.has(type));
-  if (distinct > MAX_DISTINCT_NAMES) return strong || types.includes("zoominfo") ? 2 : 3;
-  if (strong) return 1;
-  if (types.includes("zoominfo") && facts.same) return 1;
-  if (types.includes("zoominfo") || types.includes("linkedin_url")) return 2;
-  if (types.includes("name") && nameScore >= 95) return 2;
-  if (types.includes("alias") && facts.same) return 2;
+  const namesOk = Boolean(facts.same) || (facts.members === 2 && nameScore >= NAME_AGREE);
+  if (strong && namesOk && (facts.distinct ?? 0) <= MAX_DISTINCT_NAMES) return 1;
+  if (strong || types.includes("zoominfo") || types.includes("alias") || types.includes("linkedin_url")) return 2;
+  if (types.includes("name") && (facts.same || nameScore >= 95)) return 2;
   return 3;
 }
 

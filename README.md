@@ -4,7 +4,7 @@ Read-only review of duplicate accounts from a CSV you already have. The file is 
 
 On upload, the headers are detected and the match columns are suggested: account name (fuzzy), website, domain, LinkedIn company URL, LinkedIn company ID, and ZoomInfo company ID. Confirm or change that mapping before matching runs. If the headers are not recognized, choose the columns yourself. Parent, country, stage, and ARR are not match keys. They only suggest which record should survive. Dismiss hides a group in this browser.
 
-Tier 1 requires every account in the group to share a primary website host, a primary domain, or a LinkedIn company ID, with at most three different normalized names. A ZoomInfo company ID is tier 1 only when those names are the same, or when that website, domain, or LinkedIn ID agrees as well. Domain aliases, a ZoomInfo ID alone, a fuzzy name, and an ultimate parent do not make tier 1. Groups are not chained together through a single weak link. The review list shows the tier, the match reason, the exact shared value, and each account name and ID.
+Tier 1 requires two things on every pair: an exact primary website host, primary domain, or LinkedIn company ID, and names that agree (the same normalized name, or a similarity score of at least 90). A ZoomInfo ID, a domain alias, a parent, or a fuzzy name never creates tier 1. A shared strong key whose names do not agree is split into tier 2 pairs. The review screen shows a tier summary, the plain-language reason with the exact shared value, and a side-by-side of name, website, domain, LinkedIn, ZoomInfo, country, owner, stage, ARR, and created date. The header shows the build id so a cached script is visible.
 
 Do not commit account CSVs.
 

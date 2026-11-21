@@ -15,6 +15,8 @@ const STRUCTURED = [
   "country",
   "stage",
   "arr",
+  "ownerName",
+  "created",
 ];
 
 export function buildRecords(headers, rows, mapping) {
@@ -37,6 +39,8 @@ export function buildRecords(headers, rows, mapping) {
   const countryCols = columns("country");
   const stageCols = columns("stage");
   const arrCols = columns("arr");
+  const ownerCols = columns("ownerName");
+  const createdCols = columns("created");
 
   const used = new Set();
   for (const role of STRUCTURED) {
@@ -72,6 +76,8 @@ export function buildRecords(headers, rows, mapping) {
       country: firstValue(row, countryCols),
       stage: firstValue(row, stageCols),
       arrRaw: firstValue(row, arrCols),
+      owner: firstValue(row, ownerCols),
+      created: firstValue(row, createdCols),
       extra: [],
     };
     record.synthetic = !record.id;
@@ -113,9 +119,11 @@ export function toPublic(record) {
   push("Ultimate parent ID", record.ultimateParentId);
   push("Ultimate parent name", record.ultimateParentName);
   push("Country", record.country);
+  push("Owner", record.owner);
   push("Account stage", record.stage);
   if (record.arr) push("ARR", formatArr(record.arr));
   else push("ARR", record.arrRaw);
+  push("Created date", record.created);
   for (const extra of record.extra) push(extra.label, extra.value);
 
   return {
@@ -124,7 +132,26 @@ export function toPublic(record) {
     id: record.id || `Row ${record.rowNumber}`,
     name: record.name || "(no name)",
     fields,
+    summary: {
+      name: record.name || "(no name)",
+      website: primaryHost(record.websites),
+      domain: primaryHost(record.domains),
+      linkedin: record.linkedinIds.map((item) => item.token).filter(Boolean)[0]
+        || record.linkedinUrls.map((item) => item.raw).filter(Boolean)[0]
+        || "",
+      zoominfo: record.zoominfoIds.map((item) => item.raw).filter(Boolean)[0] || "",
+      country: record.country || "",
+      owner: record.owner || "",
+      stage: record.stage || "",
+      arr: record.arr ? formatArr(record.arr) : (record.arrRaw || ""),
+      created: record.created || "",
+    },
   };
+}
+
+function primaryHost(items) {
+  const primary = (items || []).find((item) => item.primary);
+  return primary ? primary.host : "";
 }
 
 function orderedHosts(items) {

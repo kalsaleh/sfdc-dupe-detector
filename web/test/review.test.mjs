@@ -85,6 +85,14 @@ test("suggests the EMEA export columns and does not steal parent or employee fie
   assert.equal(confidence.name, "high");
   assert.equal(mapping.accountId.includes("Parent account Salesforce ID"), false);
   assert.equal(mapping.linkedinId.includes("Employee count (LinkedIn)"), false);
+  assert.deepEqual(mapping.ownerName, ["Owner name"]);
+  assert.deepEqual(mapping.created, ["Created date"]);
+  for (const role of ["website", "domain", "linkedinUrl", "linkedinId", "zoominfoId"]) {
+    assert.equal(mapping[role].some((column) => /parent/i.test(column)), false);
+  }
+  assert.equal(mapping.website.includes("ZoomInfo company ID"), false);
+  assert.equal(mapping.website.includes("Domain aliases (Harmonic)"), false);
+  assert.equal(mapping.linkedinId.includes("ZoomInfo company ID"), false);
 });
 
 test("asks for a mapping when the headers are unknown", () => {
@@ -146,7 +154,7 @@ test("groups exact keys, keeps country out of matching, and suggests the parent"
   const { groups } = findDuplicateGroups(records);
   const ids = (group) => group.memberKeys.map((key) => records.find((record) => record.key === key).id).sort();
 
-  const acme = groups.find((group) => ids(group).includes("001000000000001"));
+  const acme = groups.find((group) => ids(group).includes("001000000000001") && ids(group).includes("001000000000002"));
   assert.ok(acme);
   assert.deepEqual(ids(acme), ["001000000000001", "001000000000002"]);
   assert.equal(acme.survivorKey, "001000000000001");
@@ -164,7 +172,11 @@ test("groups exact keys, keeps country out of matching, and suggests the parent"
   assert.equal(groups.some((group) => ids(group).includes("001000000000020") && ids(group).includes("001000000000021")), false);
   assert.equal(groups.some((group) => ids(group).includes("001000000000030")), false);
   assert.equal(groups.some((group) => ids(group).includes("001000000000040")), false);
-  assert.equal(groups.some((group) => ids(group).includes("001000000000060")), false);
+  assert.equal(groups.some((group) => ids(group).includes("001000000000060") && ids(group).includes("001000000000061")), false);
+  const sameAcme = groups.find((group) => ids(group).includes("001000000000060"));
+  assert.ok(sameAcme);
+  assert.notEqual(sameAcme.tier, 1);
+  assert.ok(ids(sameAcme).includes("001000000000001"));
 
   const northwind = groups.find((group) => ids(group).includes("001000000000050"));
   assert.ok(northwind);
@@ -172,16 +184,25 @@ test("groups exact keys, keeps country out of matching, and suggests the parent"
   assert.notEqual(northwind.tier, 1);
   assert.equal(northwind.signals[0].type, "name");
   assert.equal(northwind.survivorKey, "001000000000050");
-  assert.equal(acme.tier, 1);
+  assert.equal(acme.tier, 2);
+  assert.match(acme.reason, /acme\.com/);
+  assert.match(acme.reason, /names do not match/);
   assert.ok(acme.signals.some((signal) => signal.value === "acme.com" && signal.types.includes("website")));
-  assert.equal(umbrella.tier, 1);
+  assert.equal(umbrella.tier, 2);
+  assert.match(umbrella.reason, /12345/);
+  assert.match(umbrella.reason, /names do not match/);
   assert.ok(umbrella.signals.some((signal) => signal.types.includes("linkedin_id") && signal.value === "12345"));
 
   const parent = groups.find((group) => ids(group).includes("001000000000070"));
+  assert.equal(parent.tier, 2);
+  assert.match(parent.reason, /parentco\.com/);
+  assert.match(parent.reason, /names do not match/);
   assert.equal(parent.survivorKey, "001000000000070");
   assert.match(parent.survivorReasons.join(" "), /parent/i);
 
   const stage = groups.find((group) => ids(group).includes("001000000000080"));
+  assert.notEqual(stage.tier, 1);
+  assert.match(stage.reason, /ZI-9/);
   assert.equal(stage.survivorKey, "001000000000080");
   assert.ok(computeScore("northwind traders", "northwind trader") >= 85);
   assert.equal(computeScore("acme", "acme international logistics"), 0);
@@ -255,10 +276,12 @@ test("brand tokens do not create a tier 1 group, and exact identifiers still do"
     if (brandOnly && !members.includes("P-5") && !members.includes("P-6")) assert.notEqual(group.tier, 1);
   }
 
-  const philips = groups.find((group) => withIds(group).includes("P-5"));
+  const philips = groups.find((group) => withIds(group).includes("P-5") && withIds(group).includes("P-6"));
   assert.ok(philips);
-  assert.equal(philips.tier, 1);
+  assert.equal(philips.tier, 2);
   assert.ok(withIds(philips).includes("P-6"));
+  assert.match(philips.reason, /philips\.com/);
+  assert.match(philips.reason, /names do not match/);
   assert.ok(philips.signals.some((signal) => signal.value === "philips.com" && signal.types.includes("website")));
   assert.ok(philips.signals.some((signal) => signal.value === "ZI-PH" && signal.types.includes("zoominfo")));
 
@@ -327,11 +350,29 @@ test("shared ZoomInfo, domain aliases, and ultimate parent do not make a tier 1 
   assert.deepEqual(ids(orange).sort(), ["O-1", "O-2"]);
   assert.equal(ids(orange).includes("IH"), false);
   assert.equal(ids(orange).includes("NV"), false);
+  assert.match(orange.reason, /orange\.com/);
+  assert.match(orange.reason, /same name/);
   assert.ok(orange.signals.some((signal) => signal.value === "orange.com" && signal.label === "Same primary website"));
-  assert.equal(orange.signals.some((signal) => signal.label === "Same domain alias"), false);
+  assert.equal(/domain alias/.test(orange.reason), false);
+
+  const ihedn = groups.find((group) => ids(group).includes("IH") && ids(group).includes("O-1"));
+  assert.ok(ihedn);
+  assert.equal(ihedn.tier, 2);
+  assert.match(ihedn.reason, /90572188|orange\.info/);
+  assert.match(ihedn.reason, /names do not match/);
+  const navmar = groups.find((group) => ids(group).includes("NV") && ids(group).includes("O-1"));
+  assert.ok(navmar);
+  assert.equal(navmar.tier, 2);
+  assert.match(navmar.reason, /names do not match/);
 
   assert.equal(tier1.some((group) => ids(group).includes("IH") || ids(group).includes("NV")), false);
   assert.equal(tier1.some((group) => ["S-1", "S-2", "S-3", "S-4", "S-5", "S-6"].filter((id) => ids(group).includes(id)).length > 1), false);
+  assert.equal(together(1, "S-1", "S-4"), false);
+  assert.equal(together(1, "S-1", "S-5"), false);
+  assert.equal(together(2, "S-1", "S-4"), true);
+  assert.equal(together(2, "S-2", "S-5"), true);
+  assert.match(groups.find((group) => ids(group).includes("S-1") && ids(group).includes("S-5")).reason, /ZI-SIE/);
+  assert.match(groups.find((group) => ids(group).includes("S-1") && ids(group).includes("S-5")).reason, /names do not match/);
   assert.equal(together(1, "A-1", "A-2"), false);
   assert.equal(together(1, "Z-A", "Z-B"), false);
   assert.equal(together(1, "U-1", "U-2"), false);
@@ -341,16 +382,69 @@ test("shared ZoomInfo, domain aliases, and ultimate parent do not make a tier 1 
   assert.equal(tier1.some((group) => ids(group).includes("W-1") && ids(group).length > 3), false);
   assert.equal(tier1.some((group) => ["W-1", "W-2", "W-3", "W-4"].every((id) => ids(group).includes(id))), false);
 
-  const primary = tier1.find((group) => ids(group).includes("D-1"));
+  const primary = groups.find((group) => ids(group).includes("D-1") && ids(group).includes("D-2"));
   assert.ok(primary);
-  assert.ok(ids(primary).includes("D-2"));
-  assert.ok(primary.signals.some((signal) => signal.value === "shared-primary.example" && signal.label === "Same primary domain"));
+  assert.equal(primary.tier, 2);
+  assert.match(primary.reason, /shared-primary\.example/);
+  assert.match(primary.reason, /names do not match/);
+  assert.equal(tier1.some((group) => ids(group).includes("D-1")), false);
 
   const borrower = groups.find((group) => ids(group).includes("L-1") && ids(group).includes("L-2"));
   if (borrower) assert.notEqual(borrower.tier, 1);
 
   for (const group of tier1) {
     const names = new Set(ids(group).map((id) => records.find((record) => record.id === id).nameNorm));
-    assert.ok(names.size <= 3);
+    assert.equal(names.size, 1);
+    assert.ok(group.matchTypes.some((type) => type === "website" || type === "domain" || type === "linkedin_id"));
+    assert.match(group.reason, /same name|similar name/);
   }
+});
+
+test("a shared primary domain does not make IHEDN a tier 1 duplicate of Orange", () => {
+  const headers = ["Salesforce account ID", "Account name", "Website", "Domain", "ZoomInfo company ID", "Ultimate parent Salesforce ID", "Owner name", "Created date"];
+  const ihedn = "Association Region Nord DES Auditeurs Institut DES Hautes Etudes Defense Nationale (Ihedn)";
+  const navmar = "NAVMAR Maritime Expertise and Consulting";
+  const rows = [
+    ["O-1", "Orange", "https://www.orange.com", "orange.info", "90572188", "UP-1", "Ada", "2020-01-01"],
+    ["O-2", "Orange", "https://orange.com/fr", "orange.info", "90572188", "UP-1", "Ben", "2021-02-02"],
+    ["IH", ihedn, "https://www.ihedn.fr", "orange.info", "90572188", "UP-1", "Cara", "2019-03-03"],
+    ["NV", navmar, "https://navmar.example", "orange.info", "90572188", "UP-1", "Dan", "2018-04-04"],
+  ];
+  const { mapping } = suggestMapping(headers);
+  const records = buildRecords(headers, rows, mapping);
+  const { groups } = findDuplicateGroups(records);
+  const ids = (group) => group.memberKeys.map((key) => records.find((record) => record.key === key).id);
+  const tier1 = groups.filter((group) => group.tier === 1);
+  assert.equal(tier1.some((group) => ids(group).includes("IH") || ids(group).includes("NV")), false);
+  const oranges = tier1.find((group) => ids(group).includes("O-1"));
+  assert.ok(oranges);
+  assert.deepEqual(ids(oranges).sort(), ["O-1", "O-2"]);
+  assert.match(oranges.reason, /orange\.com|orange\.info/);
+  assert.match(oranges.reason, /same name/);
+  const pair = groups.find((group) => ids(group).includes("IH") && ids(group).includes("O-1"));
+  assert.equal(pair.tier, 2);
+  assert.match(pair.reason, /orange\.info/);
+  assert.match(pair.reason, /names do not match/);
+  assert.equal(groups.some((group) => group.tier === 1 && ids(group).includes("IH") && ids(group).includes("NV")), false);
+});
+
+test("a high name score plus a primary website is tier 1, and the name score alone is not", () => {
+  const headers = ["Salesforce account ID", "Account name", "Website"];
+  const rows = [
+    ["N-1", "Northwind Traders", "https://northwind.example"],
+    ["N-2", "Northwind Trader", "https://www.northwind.example"],
+    ["N-3", "Northwind Traders", ""],
+    ["N-4", "Northwind Trader", ""],
+  ];
+  const { mapping } = suggestMapping(headers);
+  const records = buildRecords(headers, rows, mapping);
+  const { groups } = findDuplicateGroups(records);
+  const ids = (group) => group.memberKeys.map((key) => records.find((record) => record.key === key).id);
+  const strong = groups.find((group) => ids(group).includes("N-1") && ids(group).includes("N-2"));
+  assert.equal(strong.tier, 1);
+  assert.match(strong.reason, /northwind\.example/);
+  assert.match(strong.reason, /similar name/);
+  const names = groups.find((group) => ids(group).includes("N-3") && ids(group).includes("N-4"));
+  assert.ok(names);
+  assert.notEqual(names.tier, 1);
 });

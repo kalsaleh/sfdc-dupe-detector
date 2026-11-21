@@ -1,11 +1,13 @@
-import { parseCsv } from "./csv.js";
-import { findDuplicateGroups } from "./match.js";
-import { buildRecords, toPublic } from "./records.js";
+import { parseCsv } from "./csv.js?v=20261121a";
+import { findDuplicateGroups } from "./match.js?v=20261121a";
+import { buildRecords, toPublic } from "./records.js?v=20261121a";
+
+const BUILD = "20261121a";
 
 self.onmessage = async (event) => {
   const { file, mapping } = event.data;
   try {
-    const report = (phase, pct) => self.postMessage({ type: "progress", phase, pct });
+    const report = (phase, pct) => self.postMessage({ type: "progress", phase, pct, build: BUILD });
     report("Reading the file", 4);
     const text = await file.text();
     report("Parsing the CSV", 12);
@@ -27,6 +29,7 @@ self.onmessage = async (event) => {
     report("Done", 100);
     self.postMessage({
       type: "done",
+      build: BUILD,
       groups: result.groups,
       records: publicRecords,
       warnings: result.warnings,
